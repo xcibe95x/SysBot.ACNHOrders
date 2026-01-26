@@ -27,7 +27,16 @@ namespace SysBot.ACNHOrders
 
         public string Draw(string dodo)
         {
-            var position = new PointF(BaseImage.Width * 0.5f, BaseImage.Height * 0.38f);
+            var options = new TextOptions(DodoFont)
+            {
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top
+            };
+            var bounds = TextMeasurer.MeasureBounds(dodo, options);
+            var position = new PointF(
+                (BaseImage.Width - bounds.Width) * 0.5f,
+                (BaseImage.Height - bounds.Height) * 0.5f
+            );
             using (var img = BaseImage.Clone(x => x.DrawText(dodo, DodoFont, Color.White, position)))
             {
                 img.Save(ImagePathOutput);
