@@ -211,6 +211,38 @@ namespace SysBot.ACNHOrders
             return false;
         }
 
+        public async Task<bool> TrySpeakFile(ulong id, string filePath, string message, bool noDoublePost = false)
+        {
+            try
+            {
+                if (_client.ConnectionState != ConnectionState.Connected)
+                    return false;
+                var channel = _client.GetChannel(id);
+                if (noDoublePost && channel is IMessageChannel msgChannel)
+                {
+                    var lastMsg = await msgChannel.GetMessagesAsync(1).FlattenAsync();
+                    if (lastMsg != null && lastMsg.Any())
+                        if (lastMsg.ElementAt(0).Content == message)
+                            return true; // exists
+                }
+
+                if (channel is IMessageChannel textChannel)
+                {
+                    await textChannel.SendFileAsync(filePath, message).ConfigureAwait(false);
+                    return true;
+                }
+            }
+            catch (Exception e)
+            {
+                if (e.StackTrace != null)
+                    LogUtil.LogError($"SpeakFile failed with:\n{e.Message}\n{e.StackTrace}", nameof(SysCord));
+                else
+                    LogUtil.LogError($"SpeakFile failed with:\n{e.Message}", nameof(SysCord));
+            }
+
+            return false;
+        }
+
         private async Task HandleMessageAsync(SocketMessage arg)
         {
             // Bail out if it's a System Message.
@@ -331,8 +363,14 @@ namespace SysBot.ACNHOrders
                         await _client.SetStatusAsync(state).ConfigureAwait(false);
                     }
 
-                    if (Bot.Config.DodoModeConfig.LimitedDodoRestoreOnlyMode && Bot.Config.DodoModeConfig.SetStatusAsDodoCode)
-                        await _client.SetGameAsync($"Dodo code: {Bot.DodoCode}").ConfigureAwait(false);
+                    if (Bot.Config.DodoModeConfig.LimitedDodoRestoreOnlyMode)
+                    {
+                        var dodoConfig = Bot.Config.DodoModeConfig;
+                        if (dodoConfig.SetStatusAsDodoCode && !dodoConfig.DisableDodoCodeActivity)
+                            await _client.SetGameAsync($"Dodo code: {Bot.DodoCode}").ConfigureAwait(false);
+                        else if (!string.IsNullOrWhiteSpace(dodoConfig.CustomActivity))
+                            await _client.SetGameAsync(dodoConfig.CustomActivity).ConfigureAwait(false);
+                    }
 
                     await Task.Delay(2_000, token).ConfigureAwait(false);
                     continue;

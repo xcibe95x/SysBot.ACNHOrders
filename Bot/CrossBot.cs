@@ -253,7 +253,30 @@ namespace SysBot.ACNHOrders
                 DodoCode = Encoding.UTF8.GetString(bytes, 0, 5);
 
                 if (DodoPosition.IsDodoValid(DodoCode) && Config.DodoModeConfig.EchoDodoChannels.Count > 0)
-                    await AttemptEchoHook($"[{DateTime.Now:yyyy-MM-dd hh:mm:ss tt}] The Dodo code for {TownName} has updated, the new Dodo code is: {DodoCode}.", Config.DodoModeConfig.EchoDodoChannels, token).ConfigureAwait(false);
+                {
+                    var msg = $"The Dodo code for {TownName} has updated, the new Dodo code is: {DodoCode}.";
+                    var draw = DodoImageDrawer;
+                    var sent = false;
+                    if (draw != null)
+                    {
+                        var path = draw.Draw(DodoCode);
+                        if (File.Exists(path))
+                        {
+                            foreach (var msgChannel in Config.DodoModeConfig.EchoDodoChannels)
+                            {
+                                if (!await Globals.Self.TrySpeakFile(msgChannel, path, msg, false).ConfigureAwait(false))
+                                {
+                                    LogUtil.LogError($"Unable to post into channels: {msgChannel}.", Config.IP);
+                                    throw new Exception("Discord has disconnected.");
+                                }
+                            }
+                            sent = true;
+                        }
+                    }
+
+                    if (!sent)
+                        await AttemptEchoHook(msg, Config.DodoModeConfig.EchoDodoChannels, token).ConfigureAwait(false);
+                }
 
                 NotifyDodo(DodoCode);
                 if (Config.DodoModeConfig.MaxBells)

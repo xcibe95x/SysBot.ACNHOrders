@@ -60,6 +60,12 @@ namespace SysBot.ACNHOrders
         /// <summary> When set to true, dodo code will become bot status </summary>
         public bool SetStatusAsDodoCode { get; set; }
 
+        /// <summary> When set to true, do not show the dodo code in the bot activity </summary>
+        public bool DisableDodoCodeActivity { get; set; } = false;
+
+        /// <summary> Custom bot activity to display while in dodo restore mode </summary>
+        public string CustomActivity { get; set; } = "";
+
         /// <summary> When set to false, senddodo will not work (for anyone) </summary>
         public bool AllowSendDodo { get; set; } = true;
 
