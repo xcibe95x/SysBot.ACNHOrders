@@ -104,7 +104,7 @@ namespace SocketAPI {
 					IPEndPoint? clientEP = client.Client.RemoteEndPoint as IPEndPoint;
 					Logger.LogInfo($"A client connected! IP: {clientEP?.Address}, on port: {clientEP?.Port}");
 
-					HandleTcpClient(client);
+					_ = HandleTcpClient(client);
 				}
 				catch(OperationCanceledException) when (tcpListenerCancellationToken.IsCancellationRequested)
 				{
@@ -122,77 +122,92 @@ namespace SocketAPI {
 		/// <summary>
 		/// Given a connected TcpClient, this callback handles communication & graceful shutdown.
 		/// </summary>
-		private async void HandleTcpClient(TcpClient client)
+		private async Task HandleTcpClient(TcpClient client)
 		{
 			NetworkStream stream = client.GetStream();
+			byte[] buffer = new byte[client.ReceiveBufferSize];
 
-			while (true)
+			try
 			{
-				byte[] buffer = new byte[client.ReceiveBufferSize];
-				int bytesRead = await stream.ReadAsync(buffer, 0, client.ReceiveBufferSize, tcpListenerCancellationToken);
-
-				if (bytesRead == 0)
+				while (!tcpListenerCancellationToken.IsCancellationRequested)
 				{
-					Logger.LogInfo("A remote client closed the connection.");
-					break;
+					int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, tcpListenerCancellationToken);
+
+					if (bytesRead == 0)
+					{
+						Logger.LogInfo("A remote client closed the connection.");
+						break;
+					}
+
+					string rawMessage = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+					rawMessage = Regex.Replace(rawMessage, @"\r\n?|\n|\0", "");
+					
+					SocketAPIRequest? request = SocketAPIProtocol.DecodeMessage(rawMessage);
+
+					if (request == null)
+					{
+						await SendResponse(client, SocketAPIMessage.FromError("There was an error while JSON-parsing the provided request."));
+						continue;
+					}
+
+					SocketAPIMessage? message = InvokeEndpoint(request!.endpoint!, request?.args);
+
+					if (message == null)
+						message = SocketAPIMessage.FromError("The supplied endpoint was not found.");
+
+					message.id = request!.id;
+
+					await SendResponse(client, message);
 				}
-
-				string rawMessage = Encoding.UTF8.GetString(buffer);
-				rawMessage = Regex.Replace(rawMessage, @"\r\n?|\n|\0", "");
-				
-				SocketAPIRequest? request = SocketAPIProtocol.DecodeMessage(rawMessage);
-
-				if (request == null)
-				{
-					this.SendResponse(client, SocketAPIMessage.FromError("There was an error while JSON-parsing the provided request."));
-					continue;
-				}
-
-				SocketAPIMessage? message = this.InvokeEndpoint(request!.endpoint!, request?.args);
-
-				if (message == null)
-					message = SocketAPIMessage.FromError("The supplied endpoint was not found.");
-
-				message.id = request!.id;
-
-				this.SendResponse(client, message);
+			}
+			catch (OperationCanceledException) when (tcpListenerCancellationToken.IsCancellationRequested)
+			{
+				// Normal shutdown.
+			}
+			catch (Exception ex)
+			{
+				Logger.LogError($"An error occured while handling a client: {ex.Message}");
+			}
+			finally
+			{
+				client.Close();
 			}
 		}
 
 		/// <summary>
 		/// Sends to the supplied client the given message of type `Response`.
 		/// </summary>
-		public void SendResponse(TcpClient client, SocketAPIMessage message)
+		public Task SendResponse(TcpClient client, SocketAPIMessage message)
 		{
 			message.type = SocketAPIMessageType.Response;
-			this.SendMessage(client, message);
+			return SendMessage(client, message);
 		}
 
 		/// <summary>
 		/// Sends to the supplied client the given message of type `Event`.
 		/// </summary>
-		public void SendEvent(TcpClient client, SocketAPIMessage message)
+		public Task SendEvent(TcpClient client, SocketAPIMessage message)
 		{
 			message.type = SocketAPIMessageType.Event;
-			this.SendMessage(client, message);
+			return SendMessage(client, message);
 		}
 
 		/// <summary>
 		/// Given a message, this method sends it to all currently connected clients in parallel encoded as an event.
 		/// </summary>
-		public async void BroadcastEvent(SocketAPIMessage message)
+		public async Task BroadcastEvent(SocketAPIMessage message)
 		{
 			foreach(TcpClient client in clients)
 			{
 				if (client.Connected)
-					await Task.Run(() => SendEvent(client, message));
+					await SendEvent(client, message);
 			}
 		}
 
 		/// <summary>
 		/// Encodes a message and sends it to a client.
 		/// </summary>
-		private async void SendMessage(TcpClient toClient, SocketAPIMessage message)
+		private async Task SendMessage(TcpClient toClient, SocketAPIMessage message)
 		{
 			byte[] wBuff = Encoding.UTF8.GetBytes(SocketAPIProtocol.EncodeMessage(message)!);
 			try

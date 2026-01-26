@@ -492,7 +492,7 @@ namespace SysBot.ACNHOrders
         private async Task<OrderResult> ExecuteOrder(IACNHOrderNotifier<Item> order, CancellationToken token)
         {
             var idToken = Globals.Bot.Config.OrderConfig.ShowIDs ? $" (ID {order.OrderID})" : string.Empty;
-            string startMsg = $"Starting order for: {order.VillagerName}{idToken}. Q Size: {Orders.ToArray().Length + 1}.";
+            string startMsg = $"Starting order for: {order.VillagerName}{idToken}. Q Size: {Orders.Count + 1}.";
             LogUtil.LogInfo($"{startMsg} ({order.UserGuid})", Config.IP);
             if (order.VillagerName != string.Empty && Config.OrderConfig.EchoArrivingLeavingChannels.Count > 0)
                 await AttemptEchoHook($"> {startMsg}", Config.OrderConfig.EchoArrivingLeavingChannels, token).ConfigureAwait(false);
