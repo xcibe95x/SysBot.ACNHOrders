@@ -1,4 +1,4 @@
-﻿using SysBot.Base;
+using SysBot.Base;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -55,7 +55,7 @@ namespace SysBot.ACNHOrders
         public VisitorListHelper(CrossBot bot)
         {
             BotRunner = bot;
-            Connection = BotRunner.SwitchConnection;
+            Connection = BotRunner.SwitchConnectedConnection;
             Config = BotRunner.Config;
             LastVisitorDiff = new VisitorDifference(Visitors);
         }
@@ -65,7 +65,7 @@ namespace SysBot.ACNHOrders
         public async Task<IReadOnlyCollection<VisitorDifference.Difference>> UpdateNames(CancellationToken token)
         {
             var formattedList = $"The following visitors are on {TownName}:\n";
-            var baseOffset = await Connection.PointerAll(OffsetHelper.VillagerListJumps, token).ConfigureAwait(false); ;
+            var baseOffset = await Connection.PointerAll(OffsetHelper.VillagerListJumps, token).ConfigureAwait(false);
             VisitorCount = 0;
             for (uint i = 0; i < VisitorListSize; ++i)
             {
