@@ -45,7 +45,6 @@ namespace ACNHMobileSpawner
 
         public const ulong DodoAddress = 0xAC1A164;
         public const ulong OnlineSessionAddress = 0x9499748;
-
         public const ulong TimeAddress = 0x0BD91B00;
 
         // pointers
@@ -65,10 +64,10 @@ namespace ACNHMobileSpawner
         public const ulong CollisionStateOffset = 0x0155FDC0;
         public const ulong TimeStateAddress = 0x00328BD0;
 
-        //public const ulong ArriverVillageId = ArriverVillageLocAddress - 0x4;
         public const ulong ArriverNID = 0xBA022438;
 
         // dlc
         public const ulong PokiAddress = 0xB449E6C8;
     }
 }
+

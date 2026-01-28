@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Threading;
@@ -19,7 +19,7 @@ namespace SysBot.ACNHOrders
     {
         private const string ACNH_PROGRAM_ID = "01006F8002326000";
 
-        private ConcurrentQueue<IACNHOrderNotifier<Item>> Orders => QueueHub.CurrentInstance.Orders;
+        private OrderQueue<IACNHOrderNotifier<Item>> Orders => QueueHub.CurrentInstance.Orders;
         private uint InventoryOffset { get; set; } = (uint)OffsetHelper.InventoryOffset;
 
         public readonly ConcurrentQueue<ItemRequest> Injections = new();
@@ -32,7 +32,6 @@ namespace SysBot.ACNHOrders
         public readonly AnchorHelper Anchors;
         public readonly VisitorListHelper VisitorList;
         public readonly DummyOrder<Item> DummyRequest = new();
-        public readonly ISwitchConnectionAsync SwitchConnection;
         public readonly ConcurrentBag<IDodoRestoreNotifier> DodoNotifiers = new();
 
         public readonly ExternalMapHelper ExternalMap;
@@ -64,14 +63,12 @@ namespace SysBot.ACNHOrders
 
         private readonly RegionScreenshotComparer LoadingScreenPixelComparer = new RegionScreenshotComparer(274, 24, 1, 1, new Rgba32(2, 2, 2, 255), 2);
 
+        public ISwitchConnectionAsync SwitchConnectedConnection => SwitchConnection;
+
         public CrossBot(CrossBotConfig cfg) : base(cfg)
         {
             State = new DropBotState(cfg.DropConfig);
             Anchors = new AnchorHelper(Config.AnchorFilename);
-            if (Connection is ISwitchConnectionAsync con)
-                SwitchConnection = con;
-            else
-                throw new Exception("Connection is null.");
 
             if (Connection is SwitchSocketAsync ssa)
                 ssa.MaximumTransferSize = cfg.MapPullChunkSize;
@@ -468,7 +465,7 @@ namespace SysBot.ACNHOrders
 
             await EnsureAnchorsAreInitialised(token);
 
-            if (Orders.TryDequeue(out var item) && !item.SkipRequested)
+            if (Orders.TryDequeue(out var item) && item != null)
             {
                 var result = await ExecuteOrder(item, token).ConfigureAwait(false);
                 
@@ -961,9 +958,6 @@ namespace SysBot.ACNHOrders
                 await Task.Delay(3_500 + Config.RestartGameWait, token).ConfigureAwait(false);
             }
         startgame:
-            if (Config.AvoidSystemUpdate)
-                await SwitchConnection.ClearUpdate(token).ConfigureAwait(false);
-
             await Click(SwitchButton.A, 1_000 + Config.RestartGameWait, token).ConfigureAwait(false);
 
             // Click away from any system updates if requested
