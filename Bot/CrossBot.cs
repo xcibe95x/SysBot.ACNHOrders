@@ -58,6 +58,7 @@ namespace SysBot.ACNHOrders
         public ulong ChatAddress { get; set; } = 0;
         public int ChargePercent { get; set; } = 100;
         public DateTime LastDodoFetchTime { get; private set; } = DateTime.Now;
+        private string? LastPushedDodoDetails { get; set; }
 
         public VillagerHelper Villagers { get; private set; } = VillagerHelper.Empty;
 
@@ -1207,6 +1208,7 @@ namespace SysBot.ACNHOrders
             string DodoDetails = Config.DodoModeConfig.MinimizeDetails ? DodoCode : $"{TownName}: {DodoCode}";
             byte[] encodedText = Encoding.ASCII.GetBytes(DodoDetails);
             await FileUtil.WriteBytesToFileAsync(encodedText, Config.DodoModeConfig.DodoRestoreFilename, token).ConfigureAwait(false);
+            await PushDodoToGitHubIfChanged(DodoDetails, token).ConfigureAwait(false);
         }
 
         private async Task SaveLayerNameToFile(string name, CancellationToken token)
@@ -1242,12 +1244,39 @@ namespace SysBot.ACNHOrders
             DodoCode = DodoDetails;
             byte[] encodedText = Encoding.ASCII.GetBytes(DodoDetails);
             await FileUtil.WriteBytesToFileAsync(encodedText, Config.DodoModeConfig.DodoRestoreFilename, token).ConfigureAwait(false);
+            await PushDodoToGitHubIfChanged(DodoDetails, token).ConfigureAwait(false);
 
             encodedText = Encoding.ASCII.GetBytes(Config.DodoModeConfig.MinimizeDetails ? "0" : "Visitors: 0");
             await FileUtil.WriteBytesToFileAsync(encodedText, Config.DodoModeConfig.VisitorFilename, token).ConfigureAwait(false);
 
             encodedText = Encoding.ASCII.GetBytes(Config.DodoModeConfig.MinimizeDetails ? "No-one" : "No visitors");
             await FileUtil.WriteBytesToFileAsync(encodedText, Config.DodoModeConfig.VisitorListFilename, token).ConfigureAwait(false);
+        }
+
+        private async Task PushDodoToGitHubIfChanged(string dodoDetails, CancellationToken token)
+        {
+            var cfg = Config.DodoModeConfig;
+            if (!cfg.PushDodoToGithub)
+                return;
+
+            if (string.IsNullOrWhiteSpace(cfg.GitHubDodoRepo))
+            {
+                LogUtil.LogInfo("GitHub Dodo push enabled but GitHub repo is not configured.", Config.IP);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(cfg.GitHubToken))
+            {
+                LogUtil.LogInfo("GitHub Dodo push enabled but GitHub token is not configured.", Config.IP);
+                return;
+            }
+
+            if (string.Equals(LastPushedDodoDetails, dodoDetails, StringComparison.Ordinal))
+                return;
+
+            var pushed = await GitHubDodoPusher.TryPushAsync(cfg, dodoDetails, Config.IP, token).ConfigureAwait(false);
+            if (pushed)
+                LastPushedDodoDetails = dodoDetails;
         }
 
         private async Task<bool> IsNetworkSessionActive(CancellationToken token) => (await Connection.ReadBytesAsync((uint)OffsetHelper.OnlineSessionAddress, 0x1, token).ConfigureAwait(false))[0] == 1;
