@@ -12,12 +12,6 @@ namespace SysBot.ACNHOrders
         public bool AutoRefreshAnchors { get; set; } = false;
 
         /// <summary>
-        /// When enabled, if anchor 0 is empty the bot will bootstrap it automatically
-        /// after startup once Overworld is stable (character has loaded out of the house).
-        /// </summary>
-        public bool AutoBootstrapHouseAnchor { get; set; } = true;
-
-        /// <summary>
         /// Maximum XY distance before an anchor is considered changed and gets rewritten.
         /// </summary>
         public float AnchorUpdateBuffer { get; set; } = 0.35f;

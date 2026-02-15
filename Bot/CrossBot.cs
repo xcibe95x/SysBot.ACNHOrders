@@ -610,31 +610,22 @@ namespace SysBot.ACNHOrders
                 // Press A on title screen
                 await Click(SwitchButton.A, 0_500, token).ConfigureAwait(false);
 
-                // Wait for load time. If anchor 0 is missing and auto-bootstrap is enabled,
-                // capture it once the player is stably in Overworld after startup.
-                bool gameStarted;
-                if (CanAutoBootstrapHouseAnchor())
+                // Wait for load time and require anchor 0 (player house entry) to match.
+                int echoCount = 0;
+                var gameStarted = await EnsureAnchorMatches(0, 150_000, async () =>
                 {
-                    gameStarted = await TryBootstrapHouseAnchorAfterStartup(token).ConfigureAwait(false);
-                }
-                else
-                {
-                    int echoCount = 0;
-                    gameStarted = await EnsureAnchorMatches(0, 150_000, async () =>
+                    await ClickConversation(SwitchButton.A, 0_300, token).ConfigureAwait(false);
+                    await ClickConversation(SwitchButton.B, 0_300, token).ConfigureAwait(false);
+                    if (echoCount < 5)
                     {
-                        await ClickConversation(SwitchButton.A, 0_300, token).ConfigureAwait(false);
-                        await ClickConversation(SwitchButton.B, 0_300, token).ConfigureAwait(false);
-                        if (echoCount < 5)
+                        if (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) == OverworldState.Overworld)
                         {
-                            if (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) == OverworldState.Overworld)
-                            {
-                                LogUtil.LogInfo("Reached overworld, waiting for player house anchor (anchor 0) to match...", Config.IP);
-                                echoCount++;
-                            }
+                            LogUtil.LogInfo("Reached overworld, waiting for player house anchor (anchor 0) to match...", Config.IP);
+                            echoCount++;
                         }
+                    }
 
-                    }, token);
-                }
+                }, token);
 
                 if (!gameStarted)
                 {
@@ -1257,10 +1248,6 @@ namespace SysBot.ACNHOrders
                 if (!anchors[i].IsEmpty())
                     continue;
 
-                // Allow anchor 0 to be empty if we are configured to bootstrap it automatically on startup.
-                if (i == 0 && CanAutoBootstrapHouseAnchor())
-                    continue;
-
                 empty = i;
                 return true;
             }
@@ -1269,54 +1256,9 @@ namespace SysBot.ACNHOrders
             return false;
         }
 
-        private bool CanAutoBootstrapHouseAnchor()
-        {
-            var cfg = Config.AnchorAutomationConfig;
-            return cfg.AutoRefreshAnchors && cfg.AutoBootstrapHouseAnchor && Anchors.Anchors[0].IsEmpty();
-        }
-
-        private async Task<bool> TryBootstrapHouseAnchorAfterStartup(CancellationToken token)
-        {
-            LogUtil.LogInfo("Player house anchor (anchor 0) is empty. Attempting automatic bootstrap after game startup.", Config.IP);
-            var start = DateTime.Now;
-            int stableOverworldChecks = 0;
-            while (Math.Abs((DateTime.Now - start).TotalSeconds) <= 150)
-            {
-                await ClickConversation(SwitchButton.A, 0_300, token).ConfigureAwait(false);
-                await ClickConversation(SwitchButton.B, 0_300, token).ConfigureAwait(false);
-
-                var state = await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false);
-                if (state == OverworldState.Overworld)
-                {
-                    stableOverworldChecks++;
-                    if (stableOverworldChecks >= 4)
-                    {
-                        var anchor = await ReadAnchor(token).ConfigureAwait(false);
-                        Anchors.Anchors[0].Anchor1 = anchor.Anchor1;
-                        Anchors.Anchors[0].Anchor2 = anchor.Anchor2;
-                        Anchors.Save();
-                        LogUtil.LogInfo("Auto-bootstrapped player house anchor (anchor 0).", Config.IP);
-                        return true;
-                    }
-                }
-                else
-                {
-                    stableOverworldChecks = 0;
-                }
-
-                await Task.Delay(1_000, token).ConfigureAwait(false);
-            }
-
-            LogUtil.LogError("Failed to auto-bootstrap player house anchor (anchor 0) within startup timeout.", Config.IP);
-            return false;
-        }
-
         private async Task<bool> TryAutoCaptureMissingAnchor(int index, CancellationToken token)
         {
             if (index < 0 || index >= Anchors.Anchors.Length)
-                return false;
-
-            if (index == 0 && CanAutoBootstrapHouseAnchor())
                 return false;
 
             if (!Config.AnchorAutomationConfig.AutoGuidedAnchorSetup)
