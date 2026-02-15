@@ -12,6 +12,7 @@ using System.IO;
 using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 using SixLabors.ImageSharp.PixelFormats;
+using System.Globalization;
 
 namespace SysBot.ACNHOrders
 {
@@ -58,6 +59,7 @@ namespace SysBot.ACNHOrders
         public int ChargePercent { get; set; } = 100;
         public DateTime LastDodoFetchTime { get; private set; } = DateTime.Now;
         private string? LastPushedDodoDetails { get; set; }
+        private bool? SupportsGetButtonsCommand { get; set; }
 
         public VillagerHelper Villagers { get; private set; } = VillagerHelper.Empty;
 
@@ -606,23 +608,31 @@ namespace SysBot.ACNHOrders
                 // Press A on title screen
                 await Click(SwitchButton.A, 0_500, token).ConfigureAwait(false);
 
-                // Wait for the load time which feels like an age.
-                // Wait for the game to teleport us from the "hell" position to our front door. Keep pressing A & B incase we're stuck at the day intro.
-                int echoCount = 0;
-                bool gameStarted = await EnsureAnchorMatches(0, 150_000, async () =>
+                // Wait for load time. If anchor 0 is missing and auto-bootstrap is enabled,
+                // capture it once the player is stably in Overworld after startup.
+                bool gameStarted;
+                if (CanAutoBootstrapHouseAnchor())
                 {
-                    await ClickConversation(SwitchButton.A, 0_300, token).ConfigureAwait(false);
-                    await ClickConversation(SwitchButton.B, 0_300, token).ConfigureAwait(false);
-                    if (echoCount < 5)
+                    gameStarted = await TryBootstrapHouseAnchorAfterStartup(token).ConfigureAwait(false);
+                }
+                else
+                {
+                    int echoCount = 0;
+                    gameStarted = await EnsureAnchorMatches(0, 150_000, async () =>
                     {
-                        if (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) == OverworldState.Overworld)
+                        await ClickConversation(SwitchButton.A, 0_300, token).ConfigureAwait(false);
+                        await ClickConversation(SwitchButton.B, 0_300, token).ConfigureAwait(false);
+                        if (echoCount < 5)
                         {
-                            LogUtil.LogInfo("Reached overworld, waiting for anchor 0 to match...", Config.IP);
-                            echoCount++;
+                            if (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) == OverworldState.Overworld)
+                            {
+                                LogUtil.LogInfo("Reached overworld, waiting for anchor 0 to match...", Config.IP);
+                                echoCount++;
+                            }
                         }
-                    }
 
-                }, token);
+                    }, token);
+                }
 
                 if (!gameStarted)
                 {
@@ -633,6 +643,7 @@ namespace SysBot.ACNHOrders
                 }
 
                 LogUtil.LogInfo("Anchor 0 matched successfully.", Config.IP);
+                await AutoRefreshAnchorIfEnabled(0, "home entry", token).ConfigureAwait(false);
 
                 // inject order
                 if (!ignoreInjection)
@@ -679,6 +690,7 @@ namespace SysBot.ACNHOrders
                 await RestartGame(token).ConfigureAwait(false);
                 return OrderResult.Faulted;
             }
+            await AutoRefreshAnchorIfEnabled(2, "airport entry", token).ConfigureAwait(false);
 
             await Task.Delay(0_500, token).ConfigureAwait(false);
 
@@ -774,6 +786,7 @@ namespace SysBot.ACNHOrders
             await SendAnchorBytes(4, token).ConfigureAwait(false);
             await Task.Delay(0_500, token).ConfigureAwait(false);
             await SendAnchorBytes(4, token).ConfigureAwait(false);
+            await AutoRefreshAnchorIfEnabled(4, "airport exit", token).ConfigureAwait(false);
 
             // Walk out
             await Task.Delay(0_500, token).ConfigureAwait(false);
@@ -794,6 +807,7 @@ namespace SysBot.ACNHOrders
             await SendAnchorBytes(1, token).ConfigureAwait(false);
             await Task.Delay(0_500, token).ConfigureAwait(false);
             await SendAnchorBytes(1, token).ConfigureAwait(false);
+            await AutoRefreshAnchorIfEnabled(1, "drop zone", token).ConfigureAwait(false);
 
             if (ignoreInjection)
                 return OrderResult.Success;
@@ -960,6 +974,7 @@ namespace SysBot.ACNHOrders
                     await RestartGame(token).ConfigureAwait(false);
                     return false;
                 }
+                await AutoRefreshAnchorIfEnabled(3, "Orville counter", token).ConfigureAwait(false);
 
                 LogUtil.LogInfo($"Dodo retrieval attempt {attempt}/3.", Config.IP);
                 if (attempt == 1)
@@ -1016,6 +1031,24 @@ namespace SysBot.ACNHOrders
             }
 
             return true;
+        }
+
+        private async Task AutoRefreshAnchorIfEnabled(int index, string location, CancellationToken token)
+        {
+            var cfg = Config.AnchorAutomationConfig;
+            if (!cfg.AutoRefreshAnchors)
+                return;
+
+            var current = await ReadAnchor(token).ConfigureAwait(false);
+            var saved = Anchors.Anchors[index];
+            var buffer = cfg.AnchorUpdateBuffer <= 0 ? 0.35f : cfg.AnchorUpdateBuffer;
+            if (AnchorHelper.DoAnchorsMatch(current, saved, buffer))
+                return;
+
+            saved.Anchor1 = current.Anchor1;
+            saved.Anchor2 = current.Anchor2;
+            Anchors.Save();
+            LogUtil.LogInfo($"Auto-updated anchor {index} ({location}).", Config.IP);
         }
 
         private async Task RestartGame(CancellationToken token, bool skipClose = false)
@@ -1196,8 +1229,15 @@ namespace SysBot.ACNHOrders
         private async Task EnsureAnchorsAreInitialised(CancellationToken token)
         {
             bool loggedBadAnchors = false;
-            while (Config.ForceUpdateAnchors || Anchors.IsOneEmpty(out _))
+            int empty = -1;
+            while (true)
             {
+                if (!Config.ForceUpdateAnchors && !HasBlockingEmptyAnchor(out empty))
+                    break;
+
+                if (!Config.ForceUpdateAnchors && await TryAutoCaptureMissingAnchor(empty, token).ConfigureAwait(false))
+                    continue;
+
                 await Task.Delay(1_000, token).ConfigureAwait(false);
                 if (!loggedBadAnchors)
                 {
@@ -1205,6 +1245,253 @@ namespace SysBot.ACNHOrders
                     loggedBadAnchors = true;
                 }
             }
+        }
+
+        private bool HasBlockingEmptyAnchor(out int empty)
+        {
+            var anchors = Anchors.Anchors;
+            for (int i = 0; i < anchors.Length; i++)
+            {
+                if (!anchors[i].IsEmpty())
+                    continue;
+
+                // Allow anchor 0 to be empty if we are configured to bootstrap it automatically on startup.
+                if (i == 0 && CanAutoBootstrapHouseAnchor())
+                    continue;
+
+                empty = i;
+                return true;
+            }
+
+            empty = -1;
+            return false;
+        }
+
+        private bool CanAutoBootstrapHouseAnchor()
+        {
+            var cfg = Config.AnchorAutomationConfig;
+            return cfg.AutoRefreshAnchors && cfg.AutoBootstrapHouseAnchor && Anchors.Anchors[0].IsEmpty();
+        }
+
+        private async Task<bool> TryBootstrapHouseAnchorAfterStartup(CancellationToken token)
+        {
+            LogUtil.LogInfo("Anchor 0 is empty. Attempting automatic bootstrap after game startup.", Config.IP);
+            var start = DateTime.Now;
+            int stableOverworldChecks = 0;
+            while (Math.Abs((DateTime.Now - start).TotalSeconds) <= 150)
+            {
+                await ClickConversation(SwitchButton.A, 0_300, token).ConfigureAwait(false);
+                await ClickConversation(SwitchButton.B, 0_300, token).ConfigureAwait(false);
+
+                var state = await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false);
+                if (state == OverworldState.Overworld)
+                {
+                    stableOverworldChecks++;
+                    if (stableOverworldChecks >= 4)
+                    {
+                        var anchor = await ReadAnchor(token).ConfigureAwait(false);
+                        Anchors.Anchors[0].Anchor1 = anchor.Anchor1;
+                        Anchors.Anchors[0].Anchor2 = anchor.Anchor2;
+                        Anchors.Save();
+                        LogUtil.LogInfo("Auto-bootstrapped anchor 0 (home entry).", Config.IP);
+                        return true;
+                    }
+                }
+                else
+                {
+                    stableOverworldChecks = 0;
+                }
+
+                await Task.Delay(1_000, token).ConfigureAwait(false);
+            }
+
+            LogUtil.LogError("Failed to auto-bootstrap anchor 0 within startup timeout.", Config.IP);
+            return false;
+        }
+
+        private async Task<bool> TryAutoCaptureMissingAnchor(int index, CancellationToken token)
+        {
+            if (index < 0 || index >= Anchors.Anchors.Length)
+                return false;
+
+            if (index == 0 && CanAutoBootstrapHouseAnchor())
+                return false;
+
+            if (!Config.AnchorAutomationConfig.AutoGuidedAnchorSetup)
+                return false;
+
+            var location = index switch
+            {
+                1 => "drop zone (outside)",
+                2 => "airport entry (outside the airport door)",
+                3 => "Orville counter (inside airport)",
+                4 => "airport exit spot (inside airport, before walking out)",
+                _ => $"anchor {index}"
+            };
+
+            if (Config.AnchorAutomationConfig.GuidedSetupUseConsoleKey)
+                return await TryCaptureAnchorWithConsoleKey(index, location, token).ConfigureAwait(false);
+
+            LogUtil.LogInfo($"Auto guided anchors: move to {location} and stand still for 3 seconds to save anchor {index}.", Config.IP);
+            var stable = await TryReadStableAnchor(3, token).ConfigureAwait(false);
+            if (stable == null)
+                return false;
+
+            Anchors.Anchors[index].Anchor1 = stable.Anchor1;
+            Anchors.Anchors[index].Anchor2 = stable.Anchor2;
+            Anchors.Save();
+            LogUtil.LogInfo($"Auto captured anchor {index} ({location}).", Config.IP);
+            return true;
+        }
+
+        private async Task<bool> TryCaptureAnchorWithConsoleKey(int index, string location, CancellationToken token)
+        {
+            var cfg = Config.AnchorAutomationConfig;
+            var key = ParseConsoleKey(cfg.GuidedSetupConsoleKey, ConsoleKey.F8);
+            var timeoutSeconds = cfg.GuidedSetupConsoleTimeoutSeconds <= 0 ? 300 : cfg.GuidedSetupConsoleTimeoutSeconds;
+            LogUtil.LogInfo($"Auto guided anchors: move to {location}, then press [{key}] in this bot console{(cfg.GuidedSetupAllowSwitchL3R3 ? " or quick-press L3+R3 on Switch" : string.Empty)} to save anchor {index}.", Config.IP);
+
+            var deadline = DateTime.Now.AddSeconds(timeoutSeconds);
+            while (DateTime.Now < deadline)
+            {
+                if (TryReadConsoleKey(out var read))
+                {
+                    if (read.Key == key)
+                    {
+                        var current = await ReadAnchor(token).ConfigureAwait(false);
+                        Anchors.Anchors[index].Anchor1 = current.Anchor1;
+                        Anchors.Anchors[index].Anchor2 = current.Anchor2;
+                        Anchors.Save();
+                        LogUtil.LogInfo($"Auto captured anchor {index} ({location}) via console key.", Config.IP);
+                        return true;
+                    }
+                    if (read.Key == ConsoleKey.Escape)
+                    {
+                        LogUtil.LogInfo($"Skipped auto capture for anchor {index}.", Config.IP);
+                        return false;
+                    }
+                }
+
+                if (cfg.GuidedSetupAllowSwitchL3R3 && await TryDetectSwitchL3R3QuickPress(token).ConfigureAwait(false))
+                {
+                    var current = await ReadAnchor(token).ConfigureAwait(false);
+                    Anchors.Anchors[index].Anchor1 = current.Anchor1;
+                    Anchors.Anchors[index].Anchor2 = current.Anchor2;
+                    Anchors.Save();
+                    LogUtil.LogInfo($"Auto captured anchor {index} ({location}) via Switch L3+R3.", Config.IP);
+                    return true;
+                }
+
+                await Task.Delay(200, token).ConfigureAwait(false);
+            }
+
+            LogUtil.LogInfo($"Timed out waiting for [{key}] to capture anchor {index}.", Config.IP);
+            return false;
+        }
+
+        private async Task<bool> TryDetectSwitchL3R3QuickPress(CancellationToken token)
+        {
+            var cfg = Config.AnchorAutomationConfig;
+            var comboWindowMs = cfg.GuidedSetupSwitchComboWindowMs <= 0 ? 600 : cfg.GuidedSetupSwitchComboWindowMs;
+            const ulong StickL = 0x0004_0000;
+            const ulong StickR = 0x0008_0000;
+
+            var start = DateTime.Now;
+            bool sawL3 = false;
+            bool sawR3 = false;
+            while (Math.Abs((DateTime.Now - start).TotalMilliseconds) <= comboWindowMs)
+            {
+                var mask = await TryReadSwitchButtonsMask(token).ConfigureAwait(false);
+                if (mask == null)
+                    return false;
+
+                if ((mask.Value & StickL) != 0)
+                    sawL3 = true;
+                if ((mask.Value & StickR) != 0)
+                    sawR3 = true;
+                if (sawL3 && sawR3)
+                    return true;
+
+                await Task.Delay(40, token).ConfigureAwait(false);
+            }
+
+            return false;
+        }
+
+        private async Task<ulong?> TryReadSwitchButtonsMask(CancellationToken token)
+        {
+            if (SupportsGetButtonsCommand == false)
+                return null;
+
+            try
+            {
+                var command = Encoding.ASCII.GetBytes("getButtons\r\n");
+                var raw = await SwitchConnection.ReadRaw(command, 32, token).ConfigureAwait(false);
+                var text = Encoding.ASCII.GetString(raw).Trim('\0', '\r', '\n', ' ');
+                if (string.IsNullOrWhiteSpace(text))
+                    return null;
+
+                var cleaned = text.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? text[2..] : text;
+                if (!ulong.TryParse(cleaned, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var mask))
+                    return null;
+
+                SupportsGetButtonsCommand = true;
+                return mask;
+            }
+            catch
+            {
+                SupportsGetButtonsCommand = false;
+                return null;
+            }
+        }
+
+        private static ConsoleKey ParseConsoleKey(string configured, ConsoleKey fallback)
+        {
+            if (Enum.TryParse<ConsoleKey>(configured?.Trim(), true, out var parsed))
+                return parsed;
+            return fallback;
+        }
+
+        private static bool TryReadConsoleKey(out ConsoleKeyInfo key)
+        {
+            key = default;
+            try
+            {
+                if (!Console.KeyAvailable)
+                    return false;
+                key = Console.ReadKey(true);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private async Task<PosRotAnchor?> TryReadStableAnchor(int stableSeconds, CancellationToken token)
+        {
+            PosRotAnchor? last = null;
+            int stableCount = 0;
+            var deadline = DateTime.Now.AddMinutes(2);
+            while (DateTime.Now < deadline)
+            {
+                var current = await ReadAnchor(token).ConfigureAwait(false);
+                if (last != null && AnchorHelper.DoAnchorsMatch(last, current, 0.10f))
+                {
+                    stableCount++;
+                    if (stableCount >= stableSeconds)
+                        return current;
+                }
+                else
+                {
+                    stableCount = 0;
+                }
+
+                last = current;
+                await Task.Delay(1_000, token).ConfigureAwait(false);
+            }
+
+            return null;
         }
 
         public async Task<bool> UpdateAnchor(int index, CancellationToken token)

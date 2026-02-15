@@ -62,6 +62,9 @@ namespace SysBot.ACNHOrders
         [JsonIgnore]
         public GitHubConfig GitHubConfig { get; set; } = new();
 
+        [JsonIgnore]
+        public AnchorAutomationConfig AnchorAutomationConfig { get; set; } = new();
+
         /// <summary> When enabled, users in Discord can request the bot to pick up items (spamming Y a <see cref="DropBotConfig.PickupCount"/> times). </summary>
         public bool AllowClean { get; set; }
 
