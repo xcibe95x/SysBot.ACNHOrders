@@ -530,7 +530,15 @@ namespace SysBot.ACNHOrders
             }
             else
             {
-                await EndSession(token).ConfigureAwait(false);
+                if (result == OrderResult.Faulted)
+                {
+                    LogUtil.LogInfo("Order faulted; restarting game to re-sync workflow.", Config.IP);
+                    await RestartGame(token).ConfigureAwait(false);
+                }
+                else
+                {
+                    await EndSession(token).ConfigureAwait(false);
+                }
                 GameIsDirty = true;
             }
 
@@ -665,6 +673,12 @@ namespace SysBot.ACNHOrders
                 await Click(SwitchButton.B, 0_300, token).ConfigureAwait(false);
                 await SendAnchorBytes(2, token).ConfigureAwait(false);
             }, token);
+            if (!atAirport)
+            {
+                LogUtil.LogError("Failed to align at airport entry anchor before talking to Orville.", Config.IP);
+                await RestartGame(token).ConfigureAwait(false);
+                return OrderResult.Faulted;
+            }
 
             await Task.Delay(0_500, token).ConfigureAwait(false);
 
@@ -728,20 +742,11 @@ namespace SysBot.ACNHOrders
             LogUtil.LogInfo($"Talking to Orville. Attempting to get Dodo code for {TownName}.", Config.IP);
             if (ignoreInjection)
                 await SetScreenCheck(true, token).ConfigureAwait(false);
-            await DodoPosition.GetDodoCode((uint)OffsetHelper.DodoAddress, false, token).ConfigureAwait(false);
-
-            // try again if we failed to get a dodo
-            if (Config.OrderConfig.RetryFetchDodoOnFail && !DodoPosition.IsDodoValid(DodoPosition.DodoCode))
-            {
-                LogUtil.LogInfo($"Failed to get a valid Dodo code for {TownName}. Trying again...", Config.IP);
-                for (int i = 0; i < 10; ++i)
-                    await ClickConversation(SwitchButton.B, 0_600, token).ConfigureAwait(false);
-                await DodoPosition.GetDodoCode((uint)OffsetHelper.DodoAddress, true, token).ConfigureAwait(false);
-            }
+            var acquired = await TryAcquireDodoCodeStateDriven(token).ConfigureAwait(false);
 
             await SetScreenCheck(false, token).ConfigureAwait(false);
 
-            if (!DodoPosition.IsDodoValid(DodoPosition.DodoCode))
+            if (!acquired || !DodoPosition.IsDodoValid(DodoPosition.DodoCode))
             {
                 var error = "Failed to connect to the internet and obtain a Dodo code.";
                 LogUtil.LogError($"{error} Trying next request.", Config.IP);
@@ -938,6 +943,79 @@ namespace SysBot.ACNHOrders
             // finish "circle in" animation
             await Task.Delay(1_200, token).ConfigureAwait(false);
             return OrderResult.Success;
+        }
+
+        private async Task<bool> TryAcquireDodoCodeStateDriven(CancellationToken token)
+        {
+            const uint dodoOffset = (uint)OffsetHelper.DodoAddress;
+
+            if (await TryReadValidDodoFromMemory(dodoOffset, token).ConfigureAwait(false))
+                return true;
+
+            for (int attempt = 1; attempt <= 3; attempt++)
+            {
+                if (!await EnsureAtOrvilleCounter(token).ConfigureAwait(false))
+                {
+                    LogUtil.LogError("Unable to align at Orville counter before Dodo retrieval.", Config.IP);
+                    await RestartGame(token).ConfigureAwait(false);
+                    return false;
+                }
+
+                LogUtil.LogInfo($"Dodo retrieval attempt {attempt}/3.", Config.IP);
+                if (attempt == 1)
+                {
+                    await DodoPosition.GetDodoCode(dodoOffset, false, token).ConfigureAwait(false);
+                }
+                else if (attempt == 2)
+                {
+                    for (int i = 0; i < 10; ++i)
+                        await ClickConversation(SwitchButton.B, 0_600, token).ConfigureAwait(false);
+                    await DodoPosition.GetDodoCode(dodoOffset, true, token).ConfigureAwait(false);
+                }
+                else
+                {
+                    for (int i = 0; i < 10; ++i)
+                        await ClickConversation(SwitchButton.B, 0_600, token).ConfigureAwait(false);
+                    await DodoPosition.GetDodoCodeLegacy(dodoOffset, true, token).ConfigureAwait(false);
+                }
+
+                if (await TryReadValidDodoFromMemory(dodoOffset, token).ConfigureAwait(false))
+                    return true;
+
+                LogUtil.LogInfo("Dodo retrieval attempt failed; recovering to stable state.", Config.IP);
+                for (int i = 0; i < 10; ++i)
+                    await Click(SwitchButton.B, 0_300, token).ConfigureAwait(false);
+
+                if (!await WaitForOverworldOrRestart("Dodo retrieval recovery", 45, token, true).ConfigureAwait(false))
+                    return false;
+            }
+
+            return false;
+        }
+
+        private async Task<bool> TryReadValidDodoFromMemory(uint dodoOffset, CancellationToken token)
+        {
+            var bytes = await Connection.ReadBytesAsync(dodoOffset, 0x5, token).ConfigureAwait(false);
+            var dodo = Encoding.UTF8.GetString(bytes, 0, 5);
+            if (!DodoPosition.IsDodoValid(dodo))
+                return false;
+
+            DodoPosition.DodoCode = dodo;
+            return true;
+        }
+
+        private async Task<bool> EnsureAtOrvilleCounter(CancellationToken token)
+        {
+            int checks = 8;
+            while (!AnchorHelper.DoAnchorsMatch(await ReadAnchor(token).ConfigureAwait(false), Anchors.Anchors[3]))
+            {
+                await SendAnchorBytes(3, token).ConfigureAwait(false);
+                await Task.Delay(0_500, token).ConfigureAwait(false);
+                if (--checks <= 0)
+                    return false;
+            }
+
+            return true;
         }
 
         private async Task RestartGame(CancellationToken token, bool skipClose = false)

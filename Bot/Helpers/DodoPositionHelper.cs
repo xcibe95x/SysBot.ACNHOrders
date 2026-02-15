@@ -22,7 +22,7 @@ namespace SysBot.ACNHOrders
     // Red's dodo retrieval and movement code. All credit to Red in the PKHeX support discord for the original version of the dodo-get function
     public class DodoPositionHelper
     {
-        private const string DodoPattern = @"^[A-Z0-9]*$";
+        private const string DodoPattern = @"^[A-Z0-9]{5}$";
 
         private const string ExperimentalDodoFetchRoutine =
                 "A,W{0}," +
