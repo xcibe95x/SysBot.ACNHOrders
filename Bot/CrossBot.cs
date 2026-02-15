@@ -250,7 +250,7 @@ namespace SysBot.ACNHOrders
                 byte[] bytes = await Connection.ReadBytesAsync((uint)OffsetHelper.DodoAddress, 0x5, token).ConfigureAwait(false);
                 DodoCode = Encoding.UTF8.GetString(bytes, 0, 5);
 
-                if (DodoPosition.IsDodoValid(DodoCode) && Config.DodoModeConfig.EchoDodoChannels.Count > 0)
+                if (Config.EnableDiscord && DodoPosition.IsDodoValid(DodoCode) && Config.DodoModeConfig.EchoDodoChannels.Count > 0)
                 {
                     var msg = $"The Dodo code for {TownName} has updated, the new Dodo code is: {DodoCode}.";
                     var draw = DodoImageDrawer;
@@ -346,7 +346,10 @@ namespace SysBot.ACNHOrders
                             LogUtil.LogInfo($"Arrival logged: NID={newnid} TownID={newnislid} Order details={plaintext}", Config.IP);
 
                             if (!IsSafeNewAbuse)
-                                LogUtil.LogInfo((Globals.Bot.Config.OrderConfig.PingOnAbuseDetection ? $"Pinging <@{Globals.Self.Owner}>: " : string.Empty) + $"{LastArrival} (NID: {newnid}) is in the known abuser list. It is likely this user is abusing your treasure island.", Globals.Bot.Config.IP);
+                            {
+                                var ping = (Config.EnableDiscord && Globals.Bot.Config.OrderConfig.PingOnAbuseDetection) ? $"Pinging <@{Globals.Self.Owner}>: " : string.Empty;
+                                LogUtil.LogInfo($"{ping}{LastArrival} (NID: {newnid}) is in the known abuser list. It is likely this user is abusing your treasure island.", Globals.Bot.Config.IP);
+                            }
                         }
                         catch { }
 
@@ -442,6 +445,12 @@ namespace SysBot.ACNHOrders
         // hacked in discord forward, should really be a delegate or resusable forwarder
         private async Task AttemptEchoHook(string message, IReadOnlyCollection<ulong> channels, CancellationToken token, bool checkForDoublePosts = false)
         {
+            if (!Config.EnableDiscord)
+            {
+                LogUtil.LogText($"Echo: {message}");
+                return;
+            }
+
             foreach (var msgChannel in channels)
             {
                 if (!await Globals.Self.TrySpeakMessage(msgChannel, message, checkForDoublePosts).ConfigureAwait(false))
@@ -1234,7 +1243,7 @@ namespace SysBot.ACNHOrders
 
         private async Task ResetFiles(CancellationToken token)
         {
-            string DodoDetails = Config.DodoModeConfig.MinimizeDetails ? "FETCHING" : $"{TownName}: FETCHING";
+            string DodoDetails = Config.DodoModeConfig.MinimizeDetails ? "Wait generating new code" : $"{TownName}: Wait generating new code";
             DodoCode = DodoDetails;
             byte[] encodedText = Encoding.ASCII.GetBytes(DodoDetails);
             await FileUtil.WriteBytesToFileAsync(encodedText, Config.DodoModeConfig.DodoRestoreFilename, token).ConfigureAwait(false);
@@ -1249,7 +1258,7 @@ namespace SysBot.ACNHOrders
 
         private async Task PushDodoToGitHubIfChanged(string dodoDetails, CancellationToken token)
         {
-            var cfg = Config.DodoModeConfig;
+            var cfg = Config.GitHubConfig;
             if (!cfg.PushDodoToGithub)
                 return;
 

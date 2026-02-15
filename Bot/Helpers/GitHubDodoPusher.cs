@@ -18,69 +18,83 @@ namespace SysBot.ACNHOrders
         private static HttpClient CreateClient()
         {
             var client = new HttpClient();
+            client.Timeout = TimeSpan.FromSeconds(15);
             client.DefaultRequestHeaders.UserAgent.ParseAdd("SysBot.ACNHOrders");
             client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
             return client;
         }
 
-        public static async Task<bool> TryPushAsync(DodoRestoreConfig cfg, string content, string ip, CancellationToken token)
+        public static async Task<bool> TryPushAsync(GitHubConfig cfg, string content, string ip, CancellationToken token)
         {
-            if (!TryParseRepo(cfg.GitHubDodoRepo, out var owner, out var repo))
+            try
             {
-                LogUtil.LogError("GitHub Dodo push failed: invalid repo format. Use \"owner/repo\" or a GitHub URL.", ip);
-                return false;
-            }
-
-            var branch = string.IsNullOrWhiteSpace(cfg.GitHubDodoBranch) ? "main" : cfg.GitHubDodoBranch.Trim();
-            var path = string.IsNullOrWhiteSpace(cfg.GitHubDodoPath) ? "Dodo.txt" : cfg.GitHubDodoPath.Trim().TrimStart('/');
-            var urlPath = string.Join("/", path.Split('/').Select(Uri.EscapeDataString));
-            var baseUrl = $"https://api.github.com/repos/{owner}/{repo}/contents/{urlPath}";
-
-            string? sha = null;
-            var getUrl = $"{baseUrl}?ref={Uri.EscapeDataString(branch)}";
-            using (var getRequest = new HttpRequestMessage(HttpMethod.Get, getUrl))
-            {
-                AddAuthHeader(getRequest, cfg.GitHubToken);
-                using var getResponse = await Client.SendAsync(getRequest, token).ConfigureAwait(false);
-                if (getResponse.IsSuccessStatusCode)
+                if (!TryParseRepo(cfg.GitHubDodoRepo, out var owner, out var repo))
                 {
-                    var json = await getResponse.Content.ReadAsStringAsync(token).ConfigureAwait(false);
-                    using var doc = JsonDocument.Parse(json);
-                    if (doc.RootElement.TryGetProperty("sha", out var shaProp))
-                        sha = shaProp.GetString();
-                }
-                else if (getResponse.StatusCode != System.Net.HttpStatusCode.NotFound)
-                {
-                    var body = await getResponse.Content.ReadAsStringAsync(token).ConfigureAwait(false);
-                    LogUtil.LogError($"GitHub Dodo push failed: unable to read current file (HTTP {(int)getResponse.StatusCode}). {body}", ip);
+                    LogUtil.LogError("GitHub Dodo push failed: invalid repo format. Use \"owner/repo\" or a GitHub URL.", ip);
                     return false;
                 }
+
+                var branch = string.IsNullOrWhiteSpace(cfg.GitHubDodoBranch) ? "main" : cfg.GitHubDodoBranch.Trim();
+                var path = string.IsNullOrWhiteSpace(cfg.GitHubDodoPath) ? "Dodo.txt" : cfg.GitHubDodoPath.Trim().TrimStart('/');
+                var urlPath = string.Join("/", path.Split('/').Select(Uri.EscapeDataString));
+                var baseUrl = $"https://api.github.com/repos/{owner}/{repo}/contents/{urlPath}";
+
+                string? sha = null;
+                var getUrl = $"{baseUrl}?ref={Uri.EscapeDataString(branch)}";
+                using (var getRequest = new HttpRequestMessage(HttpMethod.Get, getUrl))
+                {
+                    AddAuthHeader(getRequest, cfg.GitHubToken);
+                    using var getResponse = await Client.SendAsync(getRequest, token).ConfigureAwait(false);
+                    if (getResponse.IsSuccessStatusCode)
+                    {
+                        var json = await getResponse.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+                        using var doc = JsonDocument.Parse(json);
+                        if (doc.RootElement.TryGetProperty("sha", out var shaProp))
+                            sha = shaProp.GetString();
+                    }
+                    else if (getResponse.StatusCode != System.Net.HttpStatusCode.NotFound)
+                    {
+                        var body = await getResponse.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+                        LogUtil.LogError($"GitHub Dodo push failed: unable to read current file (HTTP {(int)getResponse.StatusCode}). {body}", ip);
+                        return false;
+                    }
+                }
+
+                var payload = new Dictionary<string, object?>
+                {
+                    ["message"] = string.IsNullOrWhiteSpace(cfg.GitHubDodoCommitMessage) ? "Update Dodo.txt" : cfg.GitHubDodoCommitMessage,
+                    ["content"] = Convert.ToBase64String(Encoding.UTF8.GetBytes(content)),
+                    ["branch"] = branch
+                };
+                if (!string.IsNullOrWhiteSpace(sha))
+                    payload["sha"] = sha;
+
+                var jsonPayload = JsonSerializer.Serialize(payload);
+                using var putRequest = new HttpRequestMessage(HttpMethod.Put, baseUrl)
+                {
+                    Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json")
+                };
+                AddAuthHeader(putRequest, cfg.GitHubToken);
+                using var putResponse = await Client.SendAsync(putRequest, token).ConfigureAwait(false);
+                if (!putResponse.IsSuccessStatusCode)
+                {
+                    var body = await putResponse.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+                    LogUtil.LogError($"GitHub Dodo push failed: HTTP {(int)putResponse.StatusCode}. {body}", ip);
+                    return false;
+                }
+
+                return true;
             }
-
-            var payload = new Dictionary<string, object?>
+            catch (TaskCanceledException)
             {
-                ["message"] = string.IsNullOrWhiteSpace(cfg.GitHubDodoCommitMessage) ? "Update Dodo.txt" : cfg.GitHubDodoCommitMessage,
-                ["content"] = Convert.ToBase64String(Encoding.UTF8.GetBytes(content)),
-                ["branch"] = branch
-            };
-            if (!string.IsNullOrWhiteSpace(sha))
-                payload["sha"] = sha;
-
-            var jsonPayload = JsonSerializer.Serialize(payload);
-            using var putRequest = new HttpRequestMessage(HttpMethod.Put, baseUrl)
-            {
-                Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json")
-            };
-            AddAuthHeader(putRequest, cfg.GitHubToken);
-            using var putResponse = await Client.SendAsync(putRequest, token).ConfigureAwait(false);
-            if (!putResponse.IsSuccessStatusCode)
-            {
-                var body = await putResponse.Content.ReadAsStringAsync(token).ConfigureAwait(false);
-                LogUtil.LogError($"GitHub Dodo push failed: HTTP {(int)putResponse.StatusCode}. {body}", ip);
+                LogUtil.LogError("GitHub Dodo push failed: request timed out.", ip);
                 return false;
             }
-
-            return true;
+            catch (Exception ex)
+            {
+                LogUtil.LogError($"GitHub Dodo push failed: {ex.Message}", ip);
+                return false;
+            }
         }
 
         private static void AddAuthHeader(HttpRequestMessage request, string token)

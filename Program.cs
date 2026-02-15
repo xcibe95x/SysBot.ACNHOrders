@@ -11,6 +11,7 @@ namespace SysBot.ACNHOrders
         private const string DefaultConfigPath = "config.json";
         private const string DefaultTwitchPath = "twitch.json";
 		private const string DefaultSocketServerAPIPath = "server.json";
+        private const string DefaultGitHubPath = "github.json";
 
         private static async Task Main(string[] args)
         {
@@ -44,6 +45,9 @@ namespace SysBot.ACNHOrders
 			if (!File.Exists(DefaultSocketServerAPIPath))
 				SaveConfig(new SocketAPI.SocketAPIServerConfig(), DefaultSocketServerAPIPath);
 
+            if (!File.Exists(DefaultGitHubPath))
+                SaveConfig(new GitHubConfig(), DefaultGitHubPath);
+
 			var json = File.ReadAllText(configPath);
             var config = JsonSerializer.Deserialize<CrossBotConfig>(json);
             if (config == null)
@@ -71,9 +75,21 @@ namespace SysBot.ACNHOrders
 				return;
             }
 
+            json = File.ReadAllText(DefaultGitHubPath);
+            var githubConfig = JsonSerializer.Deserialize<GitHubConfig>(json);
+            if (githubConfig == null)
+            {
+                Console.WriteLine("Failed to deserialize GitHub configuration file.");
+                WaitKeyExit();
+                return;
+            }
+
+            config.GitHubConfig = githubConfig;
+
 			SaveConfig(config, configPath);
             SaveConfig(twitchConfig, DefaultTwitchPath);
 			SaveConfig(serverConfig, DefaultSocketServerAPIPath);
+            SaveConfig(githubConfig, DefaultGitHubPath);
             
 			SocketAPI.SocketAPIServer server = SocketAPI.SocketAPIServer.shared;
 			_ = server.Start(serverConfig);

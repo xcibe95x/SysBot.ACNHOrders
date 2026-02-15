@@ -25,9 +25,13 @@ namespace SysBot.ACNHOrders
             Globals.Hub = QueueHub.CurrentInstance;
             GlobalBan.UpdateConfiguration(config);
 
-            bot.Log("Starting Discord.");
+            if (config.EnableDiscord)
+                bot.Log("Starting Discord.");
+            else
+                bot.Log("Discord is disabled in config.");
 #pragma warning disable 4014
-            Task.Run(() => sys.MainAsync(config.Token, cancel), cancel);
+            if (config.EnableDiscord)
+                Task.Run(() => sys.MainAsync(config.Token, cancel), cancel);
 #pragma warning restore 4014
 
 
@@ -94,12 +98,15 @@ namespace SysBot.ACNHOrders
                     bot = new CrossBot(config);
                     Globals.Bot = bot;
 
-                    await sys.Disconnect();
+                    if (config.EnableDiscord)
+                        await sys.Disconnect();
                     sys = new SysCord(bot);
                     Globals.Self = sys;
-                    bot.Log("Restarting Discord.");
+                    if (config.EnableDiscord)
+                        bot.Log("Restarting Discord.");
 #pragma warning disable 4014
-                    Task.Run(() => sys.MainAsync(config.Token, cancel), cancel);
+                    if (config.EnableDiscord)
+                        Task.Run(() => sys.MainAsync(config.Token, cancel), cancel);
 #pragma warning restore 4014
                 }
                 else
