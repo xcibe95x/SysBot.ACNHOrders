@@ -546,8 +546,8 @@ namespace SysBot.ACNHOrders
         // execute order directly after someone else's order
         private async Task<OrderResult> ExecuteOrderMidway(IACNHOrderNotifier<Item> order, CancellationToken token)
         {
-            while (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) != OverworldState.Overworld)
-                await Task.Delay(1_000, token).ConfigureAwait(false);
+            if (!await WaitForOverworldOrRestart("Order start (midway)", 45, token).ConfigureAwait(false))
+                return OrderResult.Faulted;
 
             order.OrderInitializing(this, string.Empty);
 
@@ -634,12 +634,8 @@ namespace SysBot.ACNHOrders
                 }
             }
 
-            while (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) != OverworldState.Overworld)
-            {
-                await Task.Delay(1_000, token).ConfigureAwait(false);
-                if (ignoreInjection)
-                    await Click(SwitchButton.B, 0_500, token).ConfigureAwait(false);
-            }
+            if (!await WaitForOverworldOrRestart("Order start (pre-airport)", 60, token, ignoreInjection).ConfigureAwait(false))
+                return OrderResult.Faulted;
 
             // Delay for animation
             await Task.Delay(1_800, token).ConfigureAwait(false);
@@ -658,11 +654,8 @@ namespace SysBot.ACNHOrders
                 // We need to check for Isabelle's morning announcement
                 for (int i = 0; i < 3; ++i)
                     await Click(SwitchButton.B, 0_400, token).ConfigureAwait(false);
-                while (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) != OverworldState.Overworld)
-                {
-                    await Click(SwitchButton.B, 0_300, token).ConfigureAwait(false);
-                    await Task.Delay(1_000, token).ConfigureAwait(false);
-                }
+                if (!await WaitForOverworldOrRestart("Morning announcement clear", 60, token, true).ConfigureAwait(false))
+                    return OrderResult.Faulted;
             }
 
             // Get out of any calls, events, etc
@@ -783,14 +776,14 @@ namespace SysBot.ACNHOrders
             await Task.Delay(1_000, token).ConfigureAwait(false);
             await SetStick(SwitchStick.LEFT, 0, 0, 1_500, token).ConfigureAwait(false);
 
-            while (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) != OverworldState.Overworld)
-                await Task.Delay(1_000, token).ConfigureAwait(false);
+            if (!await WaitForOverworldOrRestart("Walk out of airport", 45, token).ConfigureAwait(false))
+                return OrderResult.Faulted;
 
             // Delay for animation
             await Task.Delay(1_200, token).ConfigureAwait(false);
 
-            while (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) != OverworldState.Overworld)
-                await Task.Delay(1_000, token).ConfigureAwait(false);
+            if (!await WaitForOverworldOrRestart("Post-animation overworld check", 45, token).ConfigureAwait(false))
+                return OrderResult.Faulted;
 
             // Teleport to drop zone (twice, in case we get pulled back)
             await SendAnchorBytes(1, token).ConfigureAwait(false);
@@ -939,11 +932,8 @@ namespace SysBot.ACNHOrders
             await Task.Delay(15_000, token).ConfigureAwait(false);
 
             // Ensure we're on overworld before exiting
-            while (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) != OverworldState.Overworld)
-            {
-                await Task.Delay(1_000, token).ConfigureAwait(false);
-                await Click(SwitchButton.B, 0_300, token).ConfigureAwait(false);
-            }
+            if (!await WaitForOverworldOrRestart("Order completion exit", 60, token, true).ConfigureAwait(false))
+                return OrderResult.Faulted;
 
             // finish "circle in" animation
             await Task.Delay(1_200, token).ConfigureAwait(false);
@@ -1280,6 +1270,26 @@ namespace SysBot.ACNHOrders
             var pushed = await GitHubDodoPusher.TryPushAsync(cfg, dodoDetails, Config.IP, token).ConfigureAwait(false);
             if (pushed)
                 LastPushedDodoDetails = dodoDetails;
+        }
+
+        private async Task<bool> WaitForOverworldOrRestart(string phase, int timeoutSeconds, CancellationToken token, bool mashB = false)
+        {
+            var start = DateTime.Now;
+            while (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) != OverworldState.Overworld)
+            {
+                if (mashB)
+                    await Click(SwitchButton.B, 0_300, token).ConfigureAwait(false);
+                await Task.Delay(1_000, token).ConfigureAwait(false);
+
+                if (Math.Abs((DateTime.Now - start).TotalSeconds) > timeoutSeconds)
+                {
+                    LogUtil.LogError($"{phase}: timed out waiting for overworld after {timeoutSeconds} seconds. Restarting game.", Config.IP);
+                    await RestartGame(token).ConfigureAwait(false);
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         private async Task<bool> IsNetworkSessionActive(CancellationToken token) => (await Connection.ReadBytesAsync((uint)OffsetHelper.OnlineSessionAddress, 0x1, token).ConfigureAwait(false))[0] == 1;
