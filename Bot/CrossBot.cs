@@ -12,7 +12,6 @@ using System.IO;
 using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 using SixLabors.ImageSharp.PixelFormats;
-using System.Globalization;
 
 namespace SysBot.ACNHOrders
 {
@@ -59,7 +58,10 @@ namespace SysBot.ACNHOrders
         public int ChargePercent { get; set; } = 100;
         public DateTime LastDodoFetchTime { get; private set; } = DateTime.Now;
         private string? LastPushedDodoDetails { get; set; }
-        private bool? SupportsGetButtonsCommand { get; set; }
+        private readonly ConcurrentQueue<ConsoleKeyInfo> ConsoleKeyQueue = new();
+        private readonly object ConsoleInputSync = new();
+        private bool ConsoleInputReaderStarted { get; set; }
+        private bool ConsoleInputReaderUnavailable { get; set; }
 
         public VillagerHelper Villagers { get; private set; } = VillagerHelper.Empty;
 
@@ -626,7 +628,7 @@ namespace SysBot.ACNHOrders
                         {
                             if (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) == OverworldState.Overworld)
                             {
-                                LogUtil.LogInfo("Reached overworld, waiting for anchor 0 to match...", Config.IP);
+                                LogUtil.LogInfo("Reached overworld, waiting for player house anchor (anchor 0) to match...", Config.IP);
                                 echoCount++;
                             }
                         }
@@ -642,7 +644,7 @@ namespace SysBot.ACNHOrders
                     return OrderResult.Faulted;
                 }
 
-                LogUtil.LogInfo("Anchor 0 matched successfully.", Config.IP);
+                LogUtil.LogInfo("Player house anchor (anchor 0) matched successfully.", Config.IP);
                 await AutoRefreshAnchorIfEnabled(0, "home entry", token).ConfigureAwait(false);
 
                 // inject order
@@ -1275,7 +1277,7 @@ namespace SysBot.ACNHOrders
 
         private async Task<bool> TryBootstrapHouseAnchorAfterStartup(CancellationToken token)
         {
-            LogUtil.LogInfo("Anchor 0 is empty. Attempting automatic bootstrap after game startup.", Config.IP);
+            LogUtil.LogInfo("Player house anchor (anchor 0) is empty. Attempting automatic bootstrap after game startup.", Config.IP);
             var start = DateTime.Now;
             int stableOverworldChecks = 0;
             while (Math.Abs((DateTime.Now - start).TotalSeconds) <= 150)
@@ -1293,7 +1295,7 @@ namespace SysBot.ACNHOrders
                         Anchors.Anchors[0].Anchor1 = anchor.Anchor1;
                         Anchors.Anchors[0].Anchor2 = anchor.Anchor2;
                         Anchors.Save();
-                        LogUtil.LogInfo("Auto-bootstrapped anchor 0 (home entry).", Config.IP);
+                        LogUtil.LogInfo("Auto-bootstrapped player house anchor (anchor 0).", Config.IP);
                         return true;
                     }
                 }
@@ -1305,7 +1307,7 @@ namespace SysBot.ACNHOrders
                 await Task.Delay(1_000, token).ConfigureAwait(false);
             }
 
-            LogUtil.LogError("Failed to auto-bootstrap anchor 0 within startup timeout.", Config.IP);
+            LogUtil.LogError("Failed to auto-bootstrap player house anchor (anchor 0) within startup timeout.", Config.IP);
             return false;
         }
 
@@ -1320,14 +1322,7 @@ namespace SysBot.ACNHOrders
             if (!Config.AnchorAutomationConfig.AutoGuidedAnchorSetup)
                 return false;
 
-            var location = index switch
-            {
-                1 => "drop zone (outside)",
-                2 => "airport entry (outside the airport door)",
-                3 => "Orville counter (inside airport)",
-                4 => "airport exit spot (inside airport, before walking out)",
-                _ => $"anchor {index}"
-            };
+            var location = GetAnchorLocationName(index);
 
             if (Config.AnchorAutomationConfig.GuidedSetupUseConsoleKey)
                 return await TryCaptureAnchorWithConsoleKey(index, location, token).ConfigureAwait(false);
@@ -1349,7 +1344,10 @@ namespace SysBot.ACNHOrders
             var cfg = Config.AnchorAutomationConfig;
             var key = ParseConsoleKey(cfg.GuidedSetupConsoleKey, ConsoleKey.F8);
             var timeoutSeconds = cfg.GuidedSetupConsoleTimeoutSeconds <= 0 ? 300 : cfg.GuidedSetupConsoleTimeoutSeconds;
-            LogUtil.LogInfo($"Auto guided anchors: move to {location}, then press [{key}] in this bot console{(cfg.GuidedSetupAllowSwitchL3R3 ? " or quick-press L3+R3 on Switch" : string.Empty)} to save anchor {index}.", Config.IP);
+            if (!EnsureConsoleInputReaderStarted())
+                return false;
+
+            LogUtil.LogInfo($"Auto guided anchors: move to {location}, then press [{key}] in this bot console to save anchor {index}.", Config.IP);
 
             var deadline = DateTime.Now.AddSeconds(timeoutSeconds);
             while (DateTime.Now < deadline)
@@ -1370,16 +1368,7 @@ namespace SysBot.ACNHOrders
                         LogUtil.LogInfo($"Skipped auto capture for anchor {index}.", Config.IP);
                         return false;
                     }
-                }
-
-                if (cfg.GuidedSetupAllowSwitchL3R3 && await TryDetectSwitchL3R3QuickPress(token).ConfigureAwait(false))
-                {
-                    var current = await ReadAnchor(token).ConfigureAwait(false);
-                    Anchors.Anchors[index].Anchor1 = current.Anchor1;
-                    Anchors.Anchors[index].Anchor2 = current.Anchor2;
-                    Anchors.Save();
-                    LogUtil.LogInfo($"Auto captured anchor {index} ({location}) via Switch L3+R3.", Config.IP);
-                    return true;
+                    LogUtil.LogInfo($"Read key [{read.Key}], waiting for [{key}] (or [Escape] to skip).", Config.IP);
                 }
 
                 await Task.Delay(200, token).ConfigureAwait(false);
@@ -1389,60 +1378,17 @@ namespace SysBot.ACNHOrders
             return false;
         }
 
-        private async Task<bool> TryDetectSwitchL3R3QuickPress(CancellationToken token)
+        private static string GetAnchorLocationName(int index)
         {
-            var cfg = Config.AnchorAutomationConfig;
-            var comboWindowMs = cfg.GuidedSetupSwitchComboWindowMs <= 0 ? 600 : cfg.GuidedSetupSwitchComboWindowMs;
-            const ulong StickL = 0x0004_0000;
-            const ulong StickR = 0x0008_0000;
-
-            var start = DateTime.Now;
-            bool sawL3 = false;
-            bool sawR3 = false;
-            while (Math.Abs((DateTime.Now - start).TotalMilliseconds) <= comboWindowMs)
+            return index switch
             {
-                var mask = await TryReadSwitchButtonsMask(token).ConfigureAwait(false);
-                if (mask == null)
-                    return false;
-
-                if ((mask.Value & StickL) != 0)
-                    sawL3 = true;
-                if ((mask.Value & StickR) != 0)
-                    sawR3 = true;
-                if (sawL3 && sawR3)
-                    return true;
-
-                await Task.Delay(40, token).ConfigureAwait(false);
-            }
-
-            return false;
-        }
-
-        private async Task<ulong?> TryReadSwitchButtonsMask(CancellationToken token)
-        {
-            if (SupportsGetButtonsCommand == false)
-                return null;
-
-            try
-            {
-                var command = Encoding.ASCII.GetBytes("getButtons\r\n");
-                var raw = await SwitchConnection.ReadRaw(command, 32, token).ConfigureAwait(false);
-                var text = Encoding.ASCII.GetString(raw).Trim('\0', '\r', '\n', ' ');
-                if (string.IsNullOrWhiteSpace(text))
-                    return null;
-
-                var cleaned = text.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? text[2..] : text;
-                if (!ulong.TryParse(cleaned, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var mask))
-                    return null;
-
-                SupportsGetButtonsCommand = true;
-                return mask;
-            }
-            catch
-            {
-                SupportsGetButtonsCommand = false;
-                return null;
-            }
+                0 => "player house entry (anchor 0)",
+                1 => "drop zone (anchor 1, outside)",
+                2 => "airport entry (anchor 2, outside the airport door)",
+                3 => "Orville counter (anchor 3, inside airport)",
+                4 => "airport exit spot (anchor 4, inside airport, before walking out)",
+                _ => $"anchor {index}"
+            };
         }
 
         private static ConsoleKey ParseConsoleKey(string configured, ConsoleKey fallback)
@@ -1452,19 +1398,52 @@ namespace SysBot.ACNHOrders
             return fallback;
         }
 
-        private static bool TryReadConsoleKey(out ConsoleKeyInfo key)
+        private bool TryReadConsoleKey(out ConsoleKeyInfo key)
         {
-            key = default;
-            try
-            {
-                if (!Console.KeyAvailable)
-                    return false;
-                key = Console.ReadKey(true);
+            return ConsoleKeyQueue.TryDequeue(out key);
+        }
+
+        private bool EnsureConsoleInputReaderStarted()
+        {
+            if (ConsoleInputReaderStarted)
                 return true;
-            }
-            catch
-            {
+            if (ConsoleInputReaderUnavailable)
                 return false;
+
+            lock (ConsoleInputSync)
+            {
+                if (ConsoleInputReaderStarted)
+                    return true;
+                if (ConsoleInputReaderUnavailable)
+                    return false;
+
+                if (Console.IsInputRedirected)
+                {
+                    ConsoleInputReaderUnavailable = true;
+                    LogUtil.LogInfo("Console input is redirected. Keyboard capture in bot console is unavailable.", Config.IP);
+                    return false;
+                }
+
+                try
+                {
+                    _ = Task.Run(() =>
+                    {
+                        while (true)
+                        {
+                            var key = Console.ReadKey(true);
+                            ConsoleKeyQueue.Enqueue(key);
+                        }
+                    });
+                    ConsoleInputReaderStarted = true;
+                    LogUtil.LogInfo("Console key capture is active. Focus this console window and press the configured key.", Config.IP);
+                    return true;
+                }
+                catch
+                {
+                    ConsoleInputReaderUnavailable = true;
+                    LogUtil.LogInfo("Unable to start console key capture. Run the bot in an interactive console window.", Config.IP);
+                    return false;
+                }
             }
         }
 

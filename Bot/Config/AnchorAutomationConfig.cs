@@ -43,16 +43,5 @@ namespace SysBot.ACNHOrders
         /// Timeout in seconds while waiting for the guided console key.
         /// </summary>
         public int GuidedSetupConsoleTimeoutSeconds { get; set; } = 300;
-
-        /// <summary>
-        /// Also allow a quick L3+R3 press on Switch as a guided anchor capture trigger.
-        /// If unsupported by your sys-botbase build, it will be ignored automatically.
-        /// </summary>
-        public bool GuidedSetupAllowSwitchL3R3 { get; set; } = true;
-
-        /// <summary>
-        /// Maximum milliseconds between L3 and R3 press detection for combo capture.
-        /// </summary>
-        public int GuidedSetupSwitchComboWindowMs { get; set; } = 600;
     }
 }
