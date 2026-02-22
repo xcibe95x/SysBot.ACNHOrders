@@ -22,7 +22,7 @@ namespace SysBot.ACNHOrders
     // Red's dodo retrieval and movement code. All credit to Red in the PKHeX support discord for the original version of the dodo-get function
     public class DodoPositionHelper
     {
-        private const string DodoPattern = @"^[A-Z0-9]*$";
+        private const string DodoPattern = @"^[A-Z0-9]{5}$";
 
         private const string ExperimentalDodoFetchRoutine =
                 "A,W{0}," +
@@ -37,11 +37,10 @@ namespace SysBot.ACNHOrders
                 "A,W550," +
                 "A,W{1}," +
                 "A,W550," +
-                "DU,W400," +
-                "DU,W400," +
+                "DD,W600," +
                 "A,W800," +
                 "A,W550," +
-                "DU,W400," +
+                "DD,W600," +
                 "A,W550," +
                 "A,W550," +
                 "A,W550," +
@@ -122,11 +121,12 @@ namespace SysBot.ACNHOrders
             await BotRunner.ClickConversation(SwitchButton.A, 18_000 + Config.ExtraTimeConnectionWait, token).ConfigureAwait(false);
             await BotRunner.ClickConversation(SwitchButton.A, ButtonClickTime, token).ConfigureAwait(false);
             await Task.Delay(0_100 + Config.DialogueButtonPressExtraDelay, token).ConfigureAwait(false);
-            await BotRunner.Click(SwitchButton.DUP, 0_500, token).ConfigureAwait(false);
-            await BotRunner.Click(SwitchButton.DUP, 0_500, token).ConfigureAwait(false);
+            // Select "Invite via Dodo code" deterministically.
+            await BotRunner.Click(SwitchButton.DDOWN, 0_700, token).ConfigureAwait(false);
             await BotRunner.ClickConversation(SwitchButton.A, ButtonClickTime, token).ConfigureAwait(false);
             await BotRunner.ClickConversation(SwitchButton.A, ButtonClickTime, token).ConfigureAwait(false);
-            await BotRunner.Click(SwitchButton.DUP, 0_500, token).ConfigureAwait(false);
+            // Select "The more the merrier".
+            await BotRunner.Click(SwitchButton.DDOWN, 0_700, token).ConfigureAwait(false);
             await BotRunner.ClickConversation(SwitchButton.A, ButtonClickTime, token).ConfigureAwait(false);
             await BotRunner.ClickConversation(SwitchButton.A, ButtonClickTime, token).ConfigureAwait(false);
             await BotRunner.ClickConversation(SwitchButton.A, ButtonClickTime, token).ConfigureAwait(false);
@@ -200,11 +200,12 @@ namespace SysBot.ACNHOrders
             await BotRunner.Click(SwitchButton.A, 1_000, token).ConfigureAwait(false);
             await BotRunner.Click(SwitchButton.A, 20_000 + Config.ExtraTimeConnectionWait, token).ConfigureAwait(false);
             await BotRunner.Click(SwitchButton.A, 1_500, token).ConfigureAwait(false);
-            await BotRunner.Click(SwitchButton.DUP, 0_500, token).ConfigureAwait(false);
-            await BotRunner.Click(SwitchButton.DUP, 0_500, token).ConfigureAwait(false);
+            // Select "Invite via Dodo code" deterministically.
+            await BotRunner.Click(SwitchButton.DDOWN, 0_700, token).ConfigureAwait(false);
             await BotRunner.Click(SwitchButton.A, 1_500, token).ConfigureAwait(false);
             await BotRunner.Click(SwitchButton.A, 1_000, token).ConfigureAwait(false);
-            await BotRunner.Click(SwitchButton.DUP, 0_500, token).ConfigureAwait(false);
+            // Select "The more the merrier".
+            await BotRunner.Click(SwitchButton.DDOWN, 0_700, token).ConfigureAwait(false);
             await BotRunner.Click(SwitchButton.A, 2_500, token).ConfigureAwait(false);
             await BotRunner.Click(SwitchButton.A, 1_000, token).ConfigureAwait(false);
             await BotRunner.Click(SwitchButton.A, 1_500, token).ConfigureAwait(false);
@@ -241,8 +242,8 @@ namespace SysBot.ACNHOrders
             // Navigate through dialog with Dodo to open gates and to get Dodo code.
             await Task.Delay(0_500, token).ConfigureAwait(false);
 
-            if (!File.Exists(ExperimentalFetchTextFilename))
-                File.WriteAllText(ExperimentalFetchTextFilename, ExperimentalDodoFetchRoutine);
+            // Always refresh to avoid stale click sequences from older builds/config.
+            File.WriteAllText(ExperimentalFetchTextFilename, ExperimentalDodoFetchRoutine);
             var experimentalText = File.ReadAllText(ExperimentalFetchTextFilename)
                 .Trim()
                 .Replace("{0}", $"{(isRetry ? 2_000 : 3_100)}")

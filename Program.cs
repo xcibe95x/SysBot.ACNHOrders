@@ -12,27 +12,32 @@ namespace SysBot.ACNHOrders
         private const string DefaultTwitchPath = "twitch.json";
 		private const string DefaultSocketServerAPIPath = "server.json";
         private const string DefaultExtraConfigPath = "extraconfig.json";
-        private const string LegacyGitHubPath = "github.json";
+        private const string DefaultGitHubPath = "github.json";
 
         private static async Task Main(string[] args)
         {
-            string configPath;
+            string configPath = DefaultConfigPath;
+            string twitchPath = DefaultTwitchPath;
+            string socketServerPath = DefaultSocketServerAPIPath;
+            string extraConfigPath = DefaultExtraConfigPath;
+            string githubPath = DefaultGitHubPath;
 
 			Console.WriteLine("Starting up...");
-            if (args.Length > 0) 
+            if (args.Length > 5)
             {
-                if (args.Length > 1) 
-                {
-                    Console.WriteLine("Too many arguments supplied and will be ignored.");
-                    configPath = DefaultConfigPath;
-                }
-                else {
-                    configPath = args[0];
-                }
+                Console.WriteLine("Too many arguments supplied. Expected up to 5: config, twitch, server, extraconfig, github. Extra arguments will be ignored.");
             }
-            else {
-                configPath = DefaultConfigPath;
-            }
+
+            if (args.Length > 0 && !string.IsNullOrWhiteSpace(args[0]))
+                configPath = args[0];
+            if (args.Length > 1 && !string.IsNullOrWhiteSpace(args[1]))
+                twitchPath = args[1];
+            if (args.Length > 2 && !string.IsNullOrWhiteSpace(args[2]))
+                socketServerPath = args[2];
+            if (args.Length > 3 && !string.IsNullOrWhiteSpace(args[3]))
+                extraConfigPath = args[3];
+            if (args.Length > 4 && !string.IsNullOrWhiteSpace(args[4]))
+                githubPath = args[4];
 
             if (!File.Exists(configPath))
             {
@@ -40,25 +45,17 @@ namespace SysBot.ACNHOrders
                 return;
             }
 
-            if (!File.Exists(DefaultTwitchPath))
-                SaveConfig(new TwitchConfig(), DefaultTwitchPath);
+            if (!File.Exists(twitchPath))
+                SaveConfig(new TwitchConfig(), twitchPath);
 
-			if (!File.Exists(DefaultSocketServerAPIPath))
-				SaveConfig(new SocketAPI.SocketAPIServerConfig(), DefaultSocketServerAPIPath);
+			if (!File.Exists(socketServerPath))
+				SaveConfig(new SocketAPI.SocketAPIServerConfig(), socketServerPath);
 
-            if (!File.Exists(DefaultExtraConfigPath))
-            {
-                if (File.Exists(LegacyGitHubPath))
-                {
-                    var legacyJson = File.ReadAllText(LegacyGitHubPath);
-                    var legacyGitHubConfig = JsonSerializer.Deserialize<GitHubConfig>(legacyJson) ?? new GitHubConfig();
-                    SaveConfig(new ExtraConfig { GitHubConfig = legacyGitHubConfig }, DefaultExtraConfigPath);
-                }
-                else
-                {
-                    SaveConfig(new ExtraConfig(), DefaultExtraConfigPath);
-                }
-            }
+            if (!File.Exists(extraConfigPath))
+                SaveConfig(new ExtraConfig(), extraConfigPath);
+
+            if (!File.Exists(githubPath))
+                SaveConfig(new GitHubConfig(), githubPath);
 
 			var json = File.ReadAllText(configPath);
             var config = JsonSerializer.Deserialize<CrossBotConfig>(json);
@@ -69,7 +66,7 @@ namespace SysBot.ACNHOrders
                 return;
             }
 
-            json = File.ReadAllText(DefaultTwitchPath);
+            json = File.ReadAllText(twitchPath);
             var twitchConfig = JsonSerializer.Deserialize<TwitchConfig>(json);
             if (twitchConfig == null)
             {
@@ -78,7 +75,7 @@ namespace SysBot.ACNHOrders
                 return;
             }
 
-			json = File.ReadAllText(DefaultSocketServerAPIPath);
+			json = File.ReadAllText(socketServerPath);
 			var serverConfig = JsonSerializer.Deserialize<SocketAPI.SocketAPIServerConfig>(json);
             if (serverConfig == null)
             {
@@ -87,7 +84,7 @@ namespace SysBot.ACNHOrders
 				return;
             }
 
-            json = File.ReadAllText(DefaultExtraConfigPath);
+            json = File.ReadAllText(extraConfigPath);
             var extraConfig = JsonSerializer.Deserialize<ExtraConfig>(json);
             if (extraConfig == null)
             {
@@ -96,12 +93,23 @@ namespace SysBot.ACNHOrders
                 return;
             }
 
-            config.GitHubConfig = extraConfig.GitHubConfig ?? new GitHubConfig();
+            json = File.ReadAllText(githubPath);
+            var githubConfig = JsonSerializer.Deserialize<GitHubConfig>(json);
+            if (githubConfig == null)
+            {
+                Console.WriteLine("Failed to deserialize github configuration file.");
+                WaitKeyExit();
+                return;
+            }
+
+            config.GitHubConfig = githubConfig;
+            config.AnchorAutomationConfig = extraConfig.AnchorAutomationConfig ?? new AnchorAutomationConfig();
 
 			SaveConfig(config, configPath);
-            SaveConfig(twitchConfig, DefaultTwitchPath);
-			SaveConfig(serverConfig, DefaultSocketServerAPIPath);
-            SaveConfig(extraConfig, DefaultExtraConfigPath);
+            SaveConfig(twitchConfig, twitchPath);
+			SaveConfig(serverConfig, socketServerPath);
+            SaveConfig(extraConfig, extraConfigPath);
+            SaveConfig(githubConfig, githubPath);
             
 			SocketAPI.SocketAPIServer server = SocketAPI.SocketAPIServer.shared;
 			_ = server.Start(serverConfig);
@@ -113,6 +121,10 @@ namespace SysBot.ACNHOrders
 
         private static void SaveConfig<T>(T config, string path)
         {
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(dir))
+                Directory.CreateDirectory(dir);
+
             var options = new JsonSerializerOptions {WriteIndented = true};
             var json = JsonSerializer.Serialize(config, options);
             File.WriteAllText(path, json);
