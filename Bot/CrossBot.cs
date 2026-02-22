@@ -58,6 +58,10 @@ namespace SysBot.ACNHOrders
         public int ChargePercent { get; set; } = 100;
         public DateTime LastDodoFetchTime { get; private set; } = DateTime.Now;
         private string? LastPushedDodoDetails { get; set; }
+        private readonly ConcurrentQueue<ConsoleKeyInfo> ConsoleKeyQueue = new();
+        private readonly object ConsoleInputSync = new();
+        private bool ConsoleInputReaderStarted { get; set; }
+        private bool ConsoleInputReaderUnavailable { get; set; }
 
         public VillagerHelper Villagers { get; private set; } = VillagerHelper.Empty;
 
@@ -606,10 +610,9 @@ namespace SysBot.ACNHOrders
                 // Press A on title screen
                 await Click(SwitchButton.A, 0_500, token).ConfigureAwait(false);
 
-                // Wait for the load time which feels like an age.
-                // Wait for the game to teleport us from the "hell" position to our front door. Keep pressing A & B incase we're stuck at the day intro.
+                // Wait for load time and require anchor 0 (player house entry) to match.
                 int echoCount = 0;
-                bool gameStarted = await EnsureAnchorMatches(0, 150_000, async () =>
+                var gameStarted = await EnsureAnchorMatches(0, 150_000, async () =>
                 {
                     await ClickConversation(SwitchButton.A, 0_300, token).ConfigureAwait(false);
                     await ClickConversation(SwitchButton.B, 0_300, token).ConfigureAwait(false);
@@ -617,7 +620,7 @@ namespace SysBot.ACNHOrders
                     {
                         if (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) == OverworldState.Overworld)
                         {
-                            LogUtil.LogInfo("Reached overworld, waiting for anchor 0 to match...", Config.IP);
+                            LogUtil.LogInfo("Reached overworld, waiting for player house anchor (anchor 0) to match...", Config.IP);
                             echoCount++;
                         }
                     }
@@ -632,7 +635,8 @@ namespace SysBot.ACNHOrders
                     return OrderResult.Faulted;
                 }
 
-                LogUtil.LogInfo("Anchor 0 matched successfully.", Config.IP);
+                LogUtil.LogInfo("Player house anchor (anchor 0) matched successfully.", Config.IP);
+                await AutoRefreshAnchorIfEnabled(0, "home entry", token).ConfigureAwait(false);
 
                 // inject order
                 if (!ignoreInjection)
@@ -679,6 +683,7 @@ namespace SysBot.ACNHOrders
                 await RestartGame(token).ConfigureAwait(false);
                 return OrderResult.Faulted;
             }
+            await AutoRefreshAnchorIfEnabled(2, "airport entry", token).ConfigureAwait(false);
 
             await Task.Delay(0_500, token).ConfigureAwait(false);
 
@@ -774,6 +779,7 @@ namespace SysBot.ACNHOrders
             await SendAnchorBytes(4, token).ConfigureAwait(false);
             await Task.Delay(0_500, token).ConfigureAwait(false);
             await SendAnchorBytes(4, token).ConfigureAwait(false);
+            await AutoRefreshAnchorIfEnabled(4, "airport exit", token).ConfigureAwait(false);
 
             // Walk out
             await Task.Delay(0_500, token).ConfigureAwait(false);
@@ -794,6 +800,7 @@ namespace SysBot.ACNHOrders
             await SendAnchorBytes(1, token).ConfigureAwait(false);
             await Task.Delay(0_500, token).ConfigureAwait(false);
             await SendAnchorBytes(1, token).ConfigureAwait(false);
+            await AutoRefreshAnchorIfEnabled(1, "drop zone", token).ConfigureAwait(false);
 
             if (ignoreInjection)
                 return OrderResult.Success;
@@ -967,6 +974,7 @@ namespace SysBot.ACNHOrders
                     await RestartGame(token).ConfigureAwait(false);
                     return false;
                 }
+                await AutoRefreshAnchorIfEnabled(3, "Orville counter", token).ConfigureAwait(false);
 
                 LogUtil.LogInfo($"Dodo retrieval attempt {attempt}/3.", Config.IP);
                 if (attempt == 1)
@@ -1023,6 +1031,24 @@ namespace SysBot.ACNHOrders
             }
 
             return true;
+        }
+
+        private async Task AutoRefreshAnchorIfEnabled(int index, string location, CancellationToken token)
+        {
+            var cfg = Config.AnchorAutomationConfig;
+            if (!cfg.AutoRefreshAnchors)
+                return;
+
+            var current = await ReadAnchor(token).ConfigureAwait(false);
+            var saved = Anchors.Anchors[index];
+            var buffer = cfg.AnchorUpdateBuffer <= 0 ? 0.35f : cfg.AnchorUpdateBuffer;
+            if (AnchorHelper.DoAnchorsMatch(current, saved, buffer))
+                return;
+
+            saved.Anchor1 = current.Anchor1;
+            saved.Anchor2 = current.Anchor2;
+            Anchors.Save();
+            LogUtil.LogInfo($"Auto-updated anchor {index} ({location}).", Config.IP);
         }
 
         private async Task RestartGame(CancellationToken token, bool skipClose = false)
@@ -1203,8 +1229,15 @@ namespace SysBot.ACNHOrders
         private async Task EnsureAnchorsAreInitialised(CancellationToken token)
         {
             bool loggedBadAnchors = false;
-            while (Config.ForceUpdateAnchors || Anchors.IsOneEmpty(out _))
+            int empty = -1;
+            while (true)
             {
+                if (!Config.ForceUpdateAnchors && !HasBlockingEmptyAnchor(out empty))
+                    break;
+
+                if (!Config.ForceUpdateAnchors && await TryAutoCaptureMissingAnchor(empty, token).ConfigureAwait(false))
+                    continue;
+
                 await Task.Delay(1_000, token).ConfigureAwait(false);
                 if (!loggedBadAnchors)
                 {
@@ -1212,6 +1245,181 @@ namespace SysBot.ACNHOrders
                     loggedBadAnchors = true;
                 }
             }
+        }
+
+        private bool HasBlockingEmptyAnchor(out int empty)
+        {
+            var anchors = Anchors.Anchors;
+            for (int i = 0; i < anchors.Length; i++)
+            {
+                if (!anchors[i].IsEmpty())
+                    continue;
+
+                empty = i;
+                return true;
+            }
+
+            empty = -1;
+            return false;
+        }
+
+        private async Task<bool> TryAutoCaptureMissingAnchor(int index, CancellationToken token)
+        {
+            if (index < 0 || index >= Anchors.Anchors.Length)
+                return false;
+
+            if (!Config.AnchorAutomationConfig.AutoGuidedAnchorSetup)
+                return false;
+
+            var location = GetAnchorLocationName(index);
+
+            if (Config.AnchorAutomationConfig.GuidedSetupUseConsoleKey)
+                return await TryCaptureAnchorWithConsoleKey(index, location, token).ConfigureAwait(false);
+
+            LogUtil.LogInfo($"Auto guided anchors: move to {location} and stand still for 3 seconds to save anchor {index}.", Config.IP);
+            var stable = await TryReadStableAnchor(3, token).ConfigureAwait(false);
+            if (stable == null)
+                return false;
+
+            Anchors.Anchors[index].Anchor1 = stable.Anchor1;
+            Anchors.Anchors[index].Anchor2 = stable.Anchor2;
+            Anchors.Save();
+            LogUtil.LogInfo($"Auto captured anchor {index} ({location}).", Config.IP);
+            return true;
+        }
+
+        private async Task<bool> TryCaptureAnchorWithConsoleKey(int index, string location, CancellationToken token)
+        {
+            var cfg = Config.AnchorAutomationConfig;
+            var key = ParseConsoleKey(cfg.GuidedSetupConsoleKey, ConsoleKey.F8);
+            var timeoutSeconds = cfg.GuidedSetupConsoleTimeoutSeconds <= 0 ? 300 : cfg.GuidedSetupConsoleTimeoutSeconds;
+            if (!EnsureConsoleInputReaderStarted())
+                return false;
+
+            LogUtil.LogInfo($"Auto guided anchors: move to {location}, then press [{key}] in this bot console to save anchor {index}.", Config.IP);
+
+            var deadline = DateTime.Now.AddSeconds(timeoutSeconds);
+            while (DateTime.Now < deadline)
+            {
+                if (TryReadConsoleKey(out var read))
+                {
+                    if (read.Key == key)
+                    {
+                        var current = await ReadAnchor(token).ConfigureAwait(false);
+                        Anchors.Anchors[index].Anchor1 = current.Anchor1;
+                        Anchors.Anchors[index].Anchor2 = current.Anchor2;
+                        Anchors.Save();
+                        LogUtil.LogInfo($"Auto captured anchor {index} ({location}) via console key.", Config.IP);
+                        return true;
+                    }
+                    if (read.Key == ConsoleKey.Escape)
+                    {
+                        LogUtil.LogInfo($"Skipped auto capture for anchor {index}.", Config.IP);
+                        return false;
+                    }
+                    LogUtil.LogInfo($"Read key [{read.Key}], waiting for [{key}] (or [Escape] to skip).", Config.IP);
+                }
+
+                await Task.Delay(200, token).ConfigureAwait(false);
+            }
+
+            LogUtil.LogInfo($"Timed out waiting for [{key}] to capture anchor {index}.", Config.IP);
+            return false;
+        }
+
+        private static string GetAnchorLocationName(int index)
+        {
+            return index switch
+            {
+                0 => "player house entry (anchor 0)",
+                1 => "drop zone (anchor 1, outside)",
+                2 => "airport entry (anchor 2, outside the airport door)",
+                3 => "Orville counter (anchor 3, inside airport)",
+                4 => "airport exit spot (anchor 4, inside airport, before walking out)",
+                _ => $"anchor {index}"
+            };
+        }
+
+        private static ConsoleKey ParseConsoleKey(string configured, ConsoleKey fallback)
+        {
+            if (Enum.TryParse<ConsoleKey>(configured?.Trim(), true, out var parsed))
+                return parsed;
+            return fallback;
+        }
+
+        private bool TryReadConsoleKey(out ConsoleKeyInfo key)
+        {
+            return ConsoleKeyQueue.TryDequeue(out key);
+        }
+
+        private bool EnsureConsoleInputReaderStarted()
+        {
+            if (ConsoleInputReaderStarted)
+                return true;
+            if (ConsoleInputReaderUnavailable)
+                return false;
+
+            lock (ConsoleInputSync)
+            {
+                if (ConsoleInputReaderStarted)
+                    return true;
+                if (ConsoleInputReaderUnavailable)
+                    return false;
+
+                if (Console.IsInputRedirected)
+                {
+                    ConsoleInputReaderUnavailable = true;
+                    LogUtil.LogInfo("Console input is redirected. Keyboard capture in bot console is unavailable.", Config.IP);
+                    return false;
+                }
+
+                try
+                {
+                    _ = Task.Run(() =>
+                    {
+                        while (true)
+                        {
+                            var key = Console.ReadKey(true);
+                            ConsoleKeyQueue.Enqueue(key);
+                        }
+                    });
+                    ConsoleInputReaderStarted = true;
+                    LogUtil.LogInfo("Console key capture is active. Focus this console window and press the configured key.", Config.IP);
+                    return true;
+                }
+                catch
+                {
+                    ConsoleInputReaderUnavailable = true;
+                    LogUtil.LogInfo("Unable to start console key capture. Run the bot in an interactive console window.", Config.IP);
+                    return false;
+                }
+            }
+        }
+
+        private async Task<PosRotAnchor?> TryReadStableAnchor(int stableSeconds, CancellationToken token)
+        {
+            PosRotAnchor? last = null;
+            int stableCount = 0;
+            var deadline = DateTime.Now.AddMinutes(2);
+            while (DateTime.Now < deadline)
+            {
+                var current = await ReadAnchor(token).ConfigureAwait(false);
+                if (last != null && AnchorHelper.DoAnchorsMatch(last, current, 0.10f))
+                {
+                    stableCount++;
+                    if (stableCount >= stableSeconds)
+                        return current;
+                }
+                else
+                {
+                    stableCount = 0;
+                }
+
+                last = current;
+                await Task.Delay(1_000, token).ConfigureAwait(false);
+            }
+
+            return null;
         }
 
         public async Task<bool> UpdateAnchor(int index, CancellationToken token)

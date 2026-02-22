@@ -1,0 +1,29 @@
+{
+  "runtime": {
+    "mode": "dotnet",
+    "target": "bin/Debug/net10.0/SysBot.ACNHOrders.dll",
+    "workingDirectory": "."
+  },
+  "instances": [
+    {
+      "name": "bot1",
+      "enabled": true,
+      "workingDirectory": "instances/bot1",
+      "config": "config.json",
+      "twitch": "twitch.json",
+      "server": "server.json",
+      "extra": "extraconfig.json",
+      "github": "github.json"
+    },
+    {
+      "name": "bot2",
+      "enabled": false,
+      "workingDirectory": "instances/bot2",
+      "config": "config.json",
+      "twitch": "twitch.json",
+      "server": "server.json",
+      "extra": "extraconfig.json",
+      "github": "github.json"
+    }
+  ]
+}
