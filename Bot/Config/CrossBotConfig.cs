@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json.Serialization;
 using SysBot.Base;
 
 namespace SysBot.ACNHOrders
@@ -9,6 +10,9 @@ namespace SysBot.ACNHOrders
     public sealed record CrossBotConfig : SwitchConnectionConfig
     {
         #region Discord
+
+        /// <summary> When enabled, the bot will start the Discord integration. </summary>
+        public bool EnableDiscord { get; set; } = true;
 
         /// <summary> When enabled, the bot will accept commands from users via Discord. </summary>
         public bool AcceptingCommands { get; set; } = true;
@@ -54,6 +58,9 @@ namespace SysBot.ACNHOrders
         public OrderBotConfig OrderConfig { get; set; } = new();
 
         public DodoRestoreConfig DodoModeConfig { get; set; } = new();
+
+        [JsonIgnore]
+        public GitHubConfig GitHubConfig { get; set; } = new();
 
         /// <summary> When enabled, users in Discord can request the bot to pick up items (spamming Y a <see cref="DropBotConfig.PickupCount"/> times). </summary>
         public bool AllowClean { get; set; }

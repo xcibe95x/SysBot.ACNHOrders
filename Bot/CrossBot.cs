@@ -57,6 +57,7 @@ namespace SysBot.ACNHOrders
         public ulong ChatAddress { get; set; } = 0;
         public int ChargePercent { get; set; } = 100;
         public DateTime LastDodoFetchTime { get; private set; } = DateTime.Now;
+        private string? LastPushedDodoDetails { get; set; }
 
         public VillagerHelper Villagers { get; private set; } = VillagerHelper.Empty;
 
@@ -249,7 +250,7 @@ namespace SysBot.ACNHOrders
                 byte[] bytes = await Connection.ReadBytesAsync((uint)OffsetHelper.DodoAddress, 0x5, token).ConfigureAwait(false);
                 DodoCode = Encoding.UTF8.GetString(bytes, 0, 5);
 
-                if (DodoPosition.IsDodoValid(DodoCode) && Config.DodoModeConfig.EchoDodoChannels.Count > 0)
+                if (Config.EnableDiscord && DodoPosition.IsDodoValid(DodoCode) && Config.DodoModeConfig.EchoDodoChannels.Count > 0)
                 {
                     var msg = $"The Dodo code for {TownName} has updated, the new Dodo code is: {DodoCode}.";
                     var draw = DodoImageDrawer;
@@ -345,7 +346,10 @@ namespace SysBot.ACNHOrders
                             LogUtil.LogInfo($"Arrival logged: NID={newnid} TownID={newnislid} Order details={plaintext}", Config.IP);
 
                             if (!IsSafeNewAbuse)
-                                LogUtil.LogInfo((Globals.Bot.Config.OrderConfig.PingOnAbuseDetection ? $"Pinging <@{Globals.Self.Owner}>: " : string.Empty) + $"{LastArrival} (NID: {newnid}) is in the known abuser list. It is likely this user is abusing your treasure island.", Globals.Bot.Config.IP);
+                            {
+                                var ping = (Config.EnableDiscord && Globals.Bot.Config.OrderConfig.PingOnAbuseDetection) ? $"Pinging <@{Globals.Self.Owner}>: " : string.Empty;
+                                LogUtil.LogInfo($"{ping}{LastArrival} (NID: {newnid}) is in the known abuser list. It is likely this user is abusing your treasure island.", Globals.Bot.Config.IP);
+                            }
                         }
                         catch { }
 
@@ -441,6 +445,12 @@ namespace SysBot.ACNHOrders
         // hacked in discord forward, should really be a delegate or resusable forwarder
         private async Task AttemptEchoHook(string message, IReadOnlyCollection<ulong> channels, CancellationToken token, bool checkForDoublePosts = false)
         {
+            if (!Config.EnableDiscord)
+            {
+                LogUtil.LogText($"Echo: {message}");
+                return;
+            }
+
             foreach (var msgChannel in channels)
             {
                 if (!await Globals.Self.TrySpeakMessage(msgChannel, message, checkForDoublePosts).ConfigureAwait(false))
@@ -489,7 +499,7 @@ namespace SysBot.ACNHOrders
         private async Task<OrderResult> ExecuteOrder(IACNHOrderNotifier<Item> order, CancellationToken token)
         {
             var idToken = Globals.Bot.Config.OrderConfig.ShowIDs ? $" (ID {order.OrderID})" : string.Empty;
-            string startMsg = $"Starting order for: {order.VillagerName}{idToken}. Q Size: {Orders.ToArray().Length + 1}.";
+            string startMsg = $"Starting order for: {order.VillagerName}{idToken}. Q Size: {Orders.Count + 1}.";
             LogUtil.LogInfo($"{startMsg} ({order.UserGuid})", Config.IP);
             if (order.VillagerName != string.Empty && Config.OrderConfig.EchoArrivingLeavingChannels.Count > 0)
                 await AttemptEchoHook($"> {startMsg}", Config.OrderConfig.EchoArrivingLeavingChannels, token).ConfigureAwait(false);
@@ -520,7 +530,15 @@ namespace SysBot.ACNHOrders
             }
             else
             {
-                await EndSession(token).ConfigureAwait(false);
+                if (result == OrderResult.Faulted)
+                {
+                    LogUtil.LogInfo("Order faulted; restarting game to re-sync workflow.", Config.IP);
+                    await RestartGame(token).ConfigureAwait(false);
+                }
+                else
+                {
+                    await EndSession(token).ConfigureAwait(false);
+                }
                 GameIsDirty = true;
             }
 
@@ -536,8 +554,8 @@ namespace SysBot.ACNHOrders
         // execute order directly after someone else's order
         private async Task<OrderResult> ExecuteOrderMidway(IACNHOrderNotifier<Item> order, CancellationToken token)
         {
-            while (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) != OverworldState.Overworld)
-                await Task.Delay(1_000, token).ConfigureAwait(false);
+            if (!await WaitForOverworldOrRestart("Order start (midway)", 45, token).ConfigureAwait(false))
+                return OrderResult.Faulted;
 
             order.OrderInitializing(this, string.Empty);
 
@@ -624,12 +642,8 @@ namespace SysBot.ACNHOrders
                 }
             }
 
-            while (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) != OverworldState.Overworld)
-            {
-                await Task.Delay(1_000, token).ConfigureAwait(false);
-                if (ignoreInjection)
-                    await Click(SwitchButton.B, 0_500, token).ConfigureAwait(false);
-            }
+            if (!await WaitForOverworldOrRestart("Order start (pre-airport)", 60, token, ignoreInjection).ConfigureAwait(false))
+                return OrderResult.Faulted;
 
             // Delay for animation
             await Task.Delay(1_800, token).ConfigureAwait(false);
@@ -648,11 +662,8 @@ namespace SysBot.ACNHOrders
                 // We need to check for Isabelle's morning announcement
                 for (int i = 0; i < 3; ++i)
                     await Click(SwitchButton.B, 0_400, token).ConfigureAwait(false);
-                while (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) != OverworldState.Overworld)
-                {
-                    await Click(SwitchButton.B, 0_300, token).ConfigureAwait(false);
-                    await Task.Delay(1_000, token).ConfigureAwait(false);
-                }
+                if (!await WaitForOverworldOrRestart("Morning announcement clear", 60, token, true).ConfigureAwait(false))
+                    return OrderResult.Faulted;
             }
 
             // Get out of any calls, events, etc
@@ -662,6 +673,12 @@ namespace SysBot.ACNHOrders
                 await Click(SwitchButton.B, 0_300, token).ConfigureAwait(false);
                 await SendAnchorBytes(2, token).ConfigureAwait(false);
             }, token);
+            if (!atAirport)
+            {
+                LogUtil.LogError("Failed to align at airport entry anchor before talking to Orville.", Config.IP);
+                await RestartGame(token).ConfigureAwait(false);
+                return OrderResult.Faulted;
+            }
 
             await Task.Delay(0_500, token).ConfigureAwait(false);
 
@@ -725,20 +742,11 @@ namespace SysBot.ACNHOrders
             LogUtil.LogInfo($"Talking to Orville. Attempting to get Dodo code for {TownName}.", Config.IP);
             if (ignoreInjection)
                 await SetScreenCheck(true, token).ConfigureAwait(false);
-            await DodoPosition.GetDodoCode((uint)OffsetHelper.DodoAddress, false, token).ConfigureAwait(false);
-
-            // try again if we failed to get a dodo
-            if (Config.OrderConfig.RetryFetchDodoOnFail && !DodoPosition.IsDodoValid(DodoPosition.DodoCode))
-            {
-                LogUtil.LogInfo($"Failed to get a valid Dodo code for {TownName}. Trying again...", Config.IP);
-                for (int i = 0; i < 10; ++i)
-                    await ClickConversation(SwitchButton.B, 0_600, token).ConfigureAwait(false);
-                await DodoPosition.GetDodoCode((uint)OffsetHelper.DodoAddress, true, token).ConfigureAwait(false);
-            }
+            var acquired = await TryAcquireDodoCodeStateDriven(token).ConfigureAwait(false);
 
             await SetScreenCheck(false, token).ConfigureAwait(false);
 
-            if (!DodoPosition.IsDodoValid(DodoPosition.DodoCode))
+            if (!acquired || !DodoPosition.IsDodoValid(DodoPosition.DodoCode))
             {
                 var error = "Failed to connect to the internet and obtain a Dodo code.";
                 LogUtil.LogError($"{error} Trying next request.", Config.IP);
@@ -773,14 +781,14 @@ namespace SysBot.ACNHOrders
             await Task.Delay(1_000, token).ConfigureAwait(false);
             await SetStick(SwitchStick.LEFT, 0, 0, 1_500, token).ConfigureAwait(false);
 
-            while (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) != OverworldState.Overworld)
-                await Task.Delay(1_000, token).ConfigureAwait(false);
+            if (!await WaitForOverworldOrRestart("Walk out of airport", 45, token).ConfigureAwait(false))
+                return OrderResult.Faulted;
 
             // Delay for animation
             await Task.Delay(1_200, token).ConfigureAwait(false);
 
-            while (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) != OverworldState.Overworld)
-                await Task.Delay(1_000, token).ConfigureAwait(false);
+            if (!await WaitForOverworldOrRestart("Post-animation overworld check", 45, token).ConfigureAwait(false))
+                return OrderResult.Faulted;
 
             // Teleport to drop zone (twice, in case we get pulled back)
             await SendAnchorBytes(1, token).ConfigureAwait(false);
@@ -936,15 +944,85 @@ namespace SysBot.ACNHOrders
             await Task.Delay(15_000, token).ConfigureAwait(false);
 
             // Ensure we're on overworld before exiting
-            while (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) != OverworldState.Overworld)
-            {
-                await Task.Delay(1_000, token).ConfigureAwait(false);
-                await Click(SwitchButton.B, 0_300, token).ConfigureAwait(false);
-            }
+            if (!await WaitForOverworldOrRestart("Order completion exit", 60, token, true).ConfigureAwait(false))
+                return OrderResult.Faulted;
 
             // finish "circle in" animation
             await Task.Delay(1_200, token).ConfigureAwait(false);
             return OrderResult.Success;
+        }
+
+        private async Task<bool> TryAcquireDodoCodeStateDriven(CancellationToken token)
+        {
+            const uint dodoOffset = (uint)OffsetHelper.DodoAddress;
+
+            if (await TryReadValidDodoFromMemory(dodoOffset, token).ConfigureAwait(false))
+                return true;
+
+            for (int attempt = 1; attempt <= 3; attempt++)
+            {
+                if (!await EnsureAtOrvilleCounter(token).ConfigureAwait(false))
+                {
+                    LogUtil.LogError("Unable to align at Orville counter before Dodo retrieval.", Config.IP);
+                    await RestartGame(token).ConfigureAwait(false);
+                    return false;
+                }
+
+                LogUtil.LogInfo($"Dodo retrieval attempt {attempt}/3.", Config.IP);
+                if (attempt == 1)
+                {
+                    await DodoPosition.GetDodoCode(dodoOffset, false, token).ConfigureAwait(false);
+                }
+                else if (attempt == 2)
+                {
+                    for (int i = 0; i < 10; ++i)
+                        await ClickConversation(SwitchButton.B, 0_600, token).ConfigureAwait(false);
+                    await DodoPosition.GetDodoCode(dodoOffset, true, token).ConfigureAwait(false);
+                }
+                else
+                {
+                    for (int i = 0; i < 10; ++i)
+                        await ClickConversation(SwitchButton.B, 0_600, token).ConfigureAwait(false);
+                    await DodoPosition.GetDodoCodeLegacy(dodoOffset, true, token).ConfigureAwait(false);
+                }
+
+                if (await TryReadValidDodoFromMemory(dodoOffset, token).ConfigureAwait(false))
+                    return true;
+
+                LogUtil.LogInfo("Dodo retrieval attempt failed; recovering to stable state.", Config.IP);
+                for (int i = 0; i < 10; ++i)
+                    await Click(SwitchButton.B, 0_300, token).ConfigureAwait(false);
+
+                if (!await WaitForOverworldOrRestart("Dodo retrieval recovery", 45, token, true).ConfigureAwait(false))
+                    return false;
+            }
+
+            return false;
+        }
+
+        private async Task<bool> TryReadValidDodoFromMemory(uint dodoOffset, CancellationToken token)
+        {
+            var bytes = await Connection.ReadBytesAsync(dodoOffset, 0x5, token).ConfigureAwait(false);
+            var dodo = Encoding.UTF8.GetString(bytes, 0, 5);
+            if (!DodoPosition.IsDodoValid(dodo))
+                return false;
+
+            DodoPosition.DodoCode = dodo;
+            return true;
+        }
+
+        private async Task<bool> EnsureAtOrvilleCounter(CancellationToken token)
+        {
+            int checks = 8;
+            while (!AnchorHelper.DoAnchorsMatch(await ReadAnchor(token).ConfigureAwait(false), Anchors.Anchors[3]))
+            {
+                await SendAnchorBytes(3, token).ConfigureAwait(false);
+                await Task.Delay(0_500, token).ConfigureAwait(false);
+                if (--checks <= 0)
+                    return false;
+            }
+
+            return true;
         }
 
         private async Task RestartGame(CancellationToken token, bool skipClose = false)
@@ -1208,6 +1286,7 @@ namespace SysBot.ACNHOrders
             string DodoDetails = Config.DodoModeConfig.MinimizeDetails ? DodoCode : $"{TownName}: {DodoCode}";
             byte[] encodedText = Encoding.ASCII.GetBytes(DodoDetails);
             await FileUtil.WriteBytesToFileAsync(encodedText, Config.DodoModeConfig.DodoRestoreFilename, token).ConfigureAwait(false);
+            await PushDodoToGitHubIfChanged(DodoDetails, token).ConfigureAwait(false);
         }
 
         private async Task SaveLayerNameToFile(string name, CancellationToken token)
@@ -1239,16 +1318,63 @@ namespace SysBot.ACNHOrders
 
         private async Task ResetFiles(CancellationToken token)
         {
-            string DodoDetails = Config.DodoModeConfig.MinimizeDetails ? "FETCHING" : $"{TownName}: FETCHING";
+            string DodoDetails = Config.DodoModeConfig.MinimizeDetails ? "Wait generating new code" : $"{TownName}: Wait generating new code";
             DodoCode = DodoDetails;
             byte[] encodedText = Encoding.ASCII.GetBytes(DodoDetails);
             await FileUtil.WriteBytesToFileAsync(encodedText, Config.DodoModeConfig.DodoRestoreFilename, token).ConfigureAwait(false);
+            await PushDodoToGitHubIfChanged(DodoDetails, token).ConfigureAwait(false);
 
             encodedText = Encoding.ASCII.GetBytes(Config.DodoModeConfig.MinimizeDetails ? "0" : "Visitors: 0");
             await FileUtil.WriteBytesToFileAsync(encodedText, Config.DodoModeConfig.VisitorFilename, token).ConfigureAwait(false);
 
             encodedText = Encoding.ASCII.GetBytes(Config.DodoModeConfig.MinimizeDetails ? "No-one" : "No visitors");
             await FileUtil.WriteBytesToFileAsync(encodedText, Config.DodoModeConfig.VisitorListFilename, token).ConfigureAwait(false);
+        }
+
+        private async Task PushDodoToGitHubIfChanged(string dodoDetails, CancellationToken token)
+        {
+            var cfg = Config.GitHubConfig;
+            if (!cfg.PushDodoToGithub)
+                return;
+
+            if (string.IsNullOrWhiteSpace(cfg.GitHubDodoRepo))
+            {
+                LogUtil.LogInfo("GitHub Dodo push enabled but GitHub repo is not configured.", Config.IP);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(cfg.GitHubToken))
+            {
+                LogUtil.LogInfo("GitHub Dodo push enabled but GitHub token is not configured.", Config.IP);
+                return;
+            }
+
+            if (string.Equals(LastPushedDodoDetails, dodoDetails, StringComparison.Ordinal))
+                return;
+
+            var pushed = await GitHubDodoPusher.TryPushAsync(cfg, dodoDetails, Config.IP, token).ConfigureAwait(false);
+            if (pushed)
+                LastPushedDodoDetails = dodoDetails;
+        }
+
+        private async Task<bool> WaitForOverworldOrRestart(string phase, int timeoutSeconds, CancellationToken token, bool mashB = false)
+        {
+            var start = DateTime.Now;
+            while (await DodoPosition.GetOverworldState(OffsetHelper.PlayerCoordJumps, token).ConfigureAwait(false) != OverworldState.Overworld)
+            {
+                if (mashB)
+                    await Click(SwitchButton.B, 0_300, token).ConfigureAwait(false);
+                await Task.Delay(1_000, token).ConfigureAwait(false);
+
+                if (Math.Abs((DateTime.Now - start).TotalSeconds) > timeoutSeconds)
+                {
+                    LogUtil.LogError($"{phase}: timed out waiting for overworld after {timeoutSeconds} seconds. Restarting game.", Config.IP);
+                    await RestartGame(token).ConfigureAwait(false);
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         private async Task<bool> IsNetworkSessionActive(CancellationToken token) => (await Connection.ReadBytesAsync((uint)OffsetHelper.OnlineSessionAddress, 0x1, token).ConfigureAwait(false))[0] == 1;

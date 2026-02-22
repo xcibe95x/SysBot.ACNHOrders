@@ -58,7 +58,9 @@ namespace SysBot.ACNHOrders
                 var bytes = File.ReadAllBytes(filename);
                 if (bytes.Length == ACNHMobileSpawner.MapTerrainLite.ByteSize)
                 {
-                    LoadedNHLs.Add(filename, bytes);
+                    var key = Path.GetFileName(filename);
+                    if (!LoadedNHLs.ContainsKey(key))
+                        LoadedNHLs.Add(key, bytes);
                     return bytes;
                 }
             }

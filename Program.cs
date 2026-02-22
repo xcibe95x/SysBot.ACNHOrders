@@ -11,6 +11,8 @@ namespace SysBot.ACNHOrders
         private const string DefaultConfigPath = "config.json";
         private const string DefaultTwitchPath = "twitch.json";
 		private const string DefaultSocketServerAPIPath = "server.json";
+        private const string DefaultExtraConfigPath = "extraconfig.json";
+        private const string LegacyGitHubPath = "github.json";
 
         private static async Task Main(string[] args)
         {
@@ -44,6 +46,20 @@ namespace SysBot.ACNHOrders
 			if (!File.Exists(DefaultSocketServerAPIPath))
 				SaveConfig(new SocketAPI.SocketAPIServerConfig(), DefaultSocketServerAPIPath);
 
+            if (!File.Exists(DefaultExtraConfigPath))
+            {
+                if (File.Exists(LegacyGitHubPath))
+                {
+                    var legacyJson = File.ReadAllText(LegacyGitHubPath);
+                    var legacyGitHubConfig = JsonSerializer.Deserialize<GitHubConfig>(legacyJson) ?? new GitHubConfig();
+                    SaveConfig(new ExtraConfig { GitHubConfig = legacyGitHubConfig }, DefaultExtraConfigPath);
+                }
+                else
+                {
+                    SaveConfig(new ExtraConfig(), DefaultExtraConfigPath);
+                }
+            }
+
 			var json = File.ReadAllText(configPath);
             var config = JsonSerializer.Deserialize<CrossBotConfig>(json);
             if (config == null)
@@ -71,9 +87,21 @@ namespace SysBot.ACNHOrders
 				return;
             }
 
+            json = File.ReadAllText(DefaultExtraConfigPath);
+            var extraConfig = JsonSerializer.Deserialize<ExtraConfig>(json);
+            if (extraConfig == null)
+            {
+                Console.WriteLine("Failed to deserialize extra configuration file.");
+                WaitKeyExit();
+                return;
+            }
+
+            config.GitHubConfig = extraConfig.GitHubConfig ?? new GitHubConfig();
+
 			SaveConfig(config, configPath);
             SaveConfig(twitchConfig, DefaultTwitchPath);
 			SaveConfig(serverConfig, DefaultSocketServerAPIPath);
+            SaveConfig(extraConfig, DefaultExtraConfigPath);
             
 			SocketAPI.SocketAPIServer server = SocketAPI.SocketAPIServer.shared;
 			_ = server.Start(serverConfig);

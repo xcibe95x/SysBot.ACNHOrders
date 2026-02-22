@@ -18,31 +18,26 @@ namespace SysBot.ACNHOrders
         private readonly Font DodoFont;
         private readonly Image BaseImage;
 
-        private readonly TextOptions options;
-        private readonly TextGraphicsOptions tOptions;
-
         public DodoDraw(float fontPercentage = 100)
         {
-            DodoFontFamily = FontCollection.Install(FontPath);
+            DodoFontFamily = FontCollection.Add(FontPath);
             BaseImage = Image.Load(ImagePathTemplate);
             DodoFont = DodoFontFamily.CreateFont(BaseImage.Height * 0.4f * (fontPercentage/100f), FontStyle.Regular);
-
-            options = new TextOptions()
-            {
-                ApplyKerning = true,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-
-            tOptions = new TextGraphicsOptions()
-            {
-                TextOptions = options
-            };
         }
 
         public string Draw(string dodo)
         {
-            using (var img = BaseImage.Clone(x => x.DrawText(tOptions, dodo, DodoFont, Color.White, new PointF(BaseImage.Width * 0.5f, BaseImage.Height * 0.38f))))
+            var options = new TextOptions(DodoFont)
+            {
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top
+            };
+            var bounds = TextMeasurer.MeasureBounds(dodo, options);
+            var position = new PointF(
+                (BaseImage.Width - bounds.Width) * 0.5f,
+                (BaseImage.Height - bounds.Height) * 0.5f
+            );
+            using (var img = BaseImage.Clone(x => x.DrawText(dodo, DodoFont, Color.White, position)))
             {
                 img.Save(ImagePathOutput);
             }

@@ -89,5 +89,6 @@ namespace SysBot.ACNHOrders
 
         /// <summary> If the above is set to true, how often should we cycle through them? </summary>
         public int CycleNHLMinutes { get; set; } = 1440;
+
     }
 }

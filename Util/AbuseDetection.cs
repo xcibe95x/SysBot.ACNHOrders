@@ -134,7 +134,8 @@ namespace SysBot.ACNHOrders
                 var altExists = UserInfoList.FirstOrDefault(x => x.HashIdentifier != null && (x.HashIdentifier.Equals(hashid) || x.NIDIdentifier.Equals(nid)) && !x.Identity.Equals(id));
                 if (altExists != default && altExists.Identity != id)
                 {
-                    LogUtil.LogInfo((Globals.Bot.Config.OrderConfig.PingOnAbuseDetection ? $"Pinging <@{Globals.Self.Owner}>: " : string.Empty) + $"{plaintext} ({id}) exists with at least one previous identity: {altExists.Identity} ({altExists.PlaintextName})", Globals.Bot.Config.IP);
+                    var ping = (Globals.Bot.Config.EnableDiscord && Globals.Bot.Config.OrderConfig.PingOnAbuseDetection) ? $"Pinging <@{Globals.Self.Owner}>: " : string.Empty;
+                    LogUtil.LogInfo($"{ping}{plaintext} ({id}) exists with at least one previous identity: {altExists.Identity} ({altExists.PlaintextName})", Globals.Bot.Config.IP);
                 }
             }
 
