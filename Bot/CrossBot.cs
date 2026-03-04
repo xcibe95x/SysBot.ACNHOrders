@@ -670,6 +670,9 @@ namespace SysBot.ACNHOrders
                     return OrderResult.Faulted;
             }
 
+            // Break out of villager/NPC interactions before airport routing.
+            await ClearPotentialNPCInteraction(token).ConfigureAwait(false);
+
             // Get out of any calls, events, etc
             bool atAirport = await EnsureAnchorMatches(2, 10_000, async () =>
             {
@@ -963,9 +966,6 @@ namespace SysBot.ACNHOrders
         {
             const uint dodoOffset = (uint)OffsetHelper.DodoAddress;
 
-            if (await TryReadValidDodoFromMemory(dodoOffset, token).ConfigureAwait(false))
-                return true;
-
             for (int attempt = 1; attempt <= 3; attempt++)
             {
                 if (!await EnsureAtOrvilleCounter(token).ConfigureAwait(false))
@@ -1031,6 +1031,19 @@ namespace SysBot.ACNHOrders
             }
 
             return true;
+        }
+
+        private async Task ClearPotentialNPCInteraction(CancellationToken token)
+        {
+            // Repeated B presses usually exit any open dialogue/call immediately.
+            for (int i = 0; i < 10; i++)
+                await Click(SwitchButton.B, 0_250, token).ConfigureAwait(false);
+
+            // Short movement nudge helps break re-talk range with nearby villagers.
+            await SetStick(SwitchStick.LEFT, 0, -16_000, 0_300, token).ConfigureAwait(false);
+            await Task.Delay(0_200, token).ConfigureAwait(false);
+            await SetStick(SwitchStick.LEFT, 0, 0, 0_200, token).ConfigureAwait(false);
+            await Task.Delay(0_200, token).ConfigureAwait(false);
         }
 
         private async Task AutoRefreshAnchorIfEnabled(int index, string location, CancellationToken token)
@@ -1223,7 +1236,9 @@ namespace SysBot.ACNHOrders
         private async Task<bool> DoesAnchorMatch(int anchorIndex, CancellationToken token)
         {
             var anchorMemory = await ReadAnchor(token).ConfigureAwait(false);
-            return anchorMemory.AnchorBytes.SequenceEqual(Anchors.Anchors[anchorIndex].AnchorBytes);
+            var cfgBuffer = Config.AnchorAutomationConfig.AnchorUpdateBuffer;
+            var maxBuffer = cfgBuffer <= 0 ? 0.35f : cfgBuffer;
+            return AnchorHelper.DoAnchorsMatch(anchorMemory, Anchors.Anchors[anchorIndex], maxBuffer);
         }
 
         private async Task EnsureAnchorsAreInitialised(CancellationToken token)

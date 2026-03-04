@@ -36,15 +36,29 @@
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.2" />
   </ItemGroup>
 
-  <ItemGroup>
+  <!-- Windows (default) deps -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' Or $(RuntimeIdentifier.StartsWith('win'))">
     <Reference Include="NHSE.Core">
-      <HintPath>deps\NHSE.Core.dll</HintPath>
+      <HintPath>deps\win-x64\NHSE.Core.dll</HintPath>
     </Reference>
     <Reference Include="NHSE.Villagers">
-      <HintPath>deps\NHSE.Villagers.dll</HintPath>
+      <HintPath>deps\win-x64\NHSE.Villagers.dll</HintPath>
     </Reference>
     <Reference Include="SysBot.Base">
-      <HintPath>deps\SysBot.Base.dll</HintPath>
+      <HintPath>deps\win-x64\SysBot.Base.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Linux ARM64 deps -->
+  <ItemGroup Condition="$(RuntimeIdentifier.StartsWith('linux'))">
+    <Reference Include="NHSE.Core">
+      <HintPath>deps\linux-arm64\NHSE.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="NHSE.Villagers">
+      <HintPath>deps\linux-arm64\NHSE.Villagers.dll</HintPath>
+    </Reference>
+    <Reference Include="SysBot.Base">
+      <HintPath>deps\linux-arm64\SysBot.Base.dll</HintPath>
     </Reference>
   </ItemGroup>
 
